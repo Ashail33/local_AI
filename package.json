@@ -2,6 +2,8 @@
   "name": "react-example",
   "private": true,
   "version": "0.0.0",
+  "description": "A React Electron application",
+  "author": "Your Name <your.email@example.com>",
   "type": "module",
   "main": "electron/main.ts",
   "homepage": "./",
@@ -11,7 +13,11 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "build-electron": "npm run build && electron-builder"
+  "build-electron": "npm run build && electron-builder",
+    "build-electron-all": "npm run build && electron-builder -mwl",
+    "build-electron-mac": "npm run build && electron-builder --mac dmg",
+    "build-electron-win": "npm run build && electron-builder --win nsis exe",
+    "build-electron-linux": "npm run build && electron-builder --linux deb"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
@@ -44,7 +50,8 @@
     "appId": "com.example.reactapp",
     "productName": "React Example App",
     "directories": {
-      "output": "dist-electron"
+      "output": "dist-electron",
+      "buildResources": "assets"
     },
     "files": [
       "dist/**/*",
@@ -52,13 +59,46 @@
       "package.json"
     ],
     "mac": {
-      "target": "dmg"
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities"
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 410,
+          "y": 150,
+          "type": "link",
+          "path": "/Applications"
+        },
+        {
+          "x": 130,
+          "y": 150,
+          "type": "file"
+        }
+      ]
     },
     "win": {
-      "target": "nsis"
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "React Example App"
     },
     "linux": {
-      "target": "deb"
+      "target": [
+        "deb",
+        "AppImage"
+      ],
+      "category": "Utility"
     }
   }
 }

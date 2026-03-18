@@ -3,8 +3,11 @@ name: Build and Release Desktop App
 on:
   push:
     branches: [ master, main ]
+    tags:
+      - 'v*'
   pull_request:
     branches: [ master, main ]
+  workflow_dispatch:
 
 jobs:
   build-macos:
@@ -26,15 +29,18 @@ jobs:
       run: npm run build
 
     - name: Build DMG (macOS)
-      run: npm run build-electron
+      run: npm run build-electron-mac
       env:
         CSC_IDENTITY_AUTO_DISCOVERY: false
+
+    - name: List build artifacts
+      run: ls -lh dist-electron/
 
     - name: Upload DMG artifact
       uses: actions/upload-artifact@v4
       with:
-        name: macos-dmg
-        path: dist-electron/*.dmg
+        name: macos-build
+        path: dist-electron/
         if-no-files-found: warn
 
   build-windows:
@@ -56,13 +62,16 @@ jobs:
       run: npm run build
 
     - name: Build EXE (Windows)
-      run: npm run build-electron
+      run: npm run build-electron-win
+
+    - name: List build artifacts
+      run: dir dist-electron\
 
     - name: Upload EXE artifact
       uses: actions/upload-artifact@v4
       with:
-        name: windows-exe
-        path: dist-electron/*.exe
+        name: windows-build
+        path: dist-electron/
         if-no-files-found: warn
 
   build-linux:
@@ -88,12 +97,43 @@ jobs:
     - name: Build web app
       run: npm run build
 
-    - name: Build DEB (Linux)
-      run: npm run build-electron
+    - name: Build DEB and AppImage (Linux)
+      run: npm run build-electron-linux
 
-    - name: Upload DEB artifact
+    - name: List build artifacts
+      run: ls -lh dist-electron/
+
+    - name: Upload Linux artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: linux-deb
-        path: dist-electron/*.deb
+        name: linux-build
+        path: dist-electron/
         if-no-files-found: warn
+
+  create-release:
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: build-artifacts
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: build-artifacts/**/*
+        draft: false
+        prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+        body: |
+          ## Cross-Platform Build Artifacts
+
+          This release includes builds for:
+          - **macOS**: DMG installer and ZIP archive
+          - **Windows**: EXE installer and portable executable
+          - **Linux**: DEB package and AppImage
+
+          See [BUILD.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/BUILD.md) for installation instructions.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
