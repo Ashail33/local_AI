@@ -32,7 +32,7 @@ jobs:
       run: npm run build
 
     - name: Build DMG (macOS)
-      run: npx electron-builder --mac dmg zip
+      run: npx electron-builder --mac dmg zip --publish never
       env:
         CSC_IDENTITY_AUTO_DISCOVERY: false
 
@@ -68,7 +68,7 @@ jobs:
       run: npm run build
 
     - name: Build EXE (Windows)
-      run: npx electron-builder --win nsis
+      run: npx electron-builder --win nsis --publish never
 
     - name: Upload Windows artifacts
       uses: actions/upload-artifact@v4
@@ -100,7 +100,7 @@ jobs:
       run: npm run build
 
     - name: Build Linux packages
-      run: npx electron-builder --linux deb AppImage
+      run: npx electron-builder --linux deb AppImage --publish never
 
     - name: Upload Linux artifacts
       uses: actions/upload-artifact@v4
