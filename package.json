@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "main": "electron/main.ts",
+  "main": "dist/electron/main.js",
   "homepage": "./",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "build-electron": "npm run build && electron-builder"
+    "build:electron-main": "esbuild electron/main.ts --bundle --platform=node --external:electron --outfile=dist/electron/main.js --format=esm",
+    "build-electron": "npm run build && npm run build:electron-main && electron-builder"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
@@ -39,26 +40,5 @@
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
-  },
-  "build": {
-    "appId": "com.example.reactapp",
-    "productName": "React Example App",
-    "directories": {
-      "output": "dist-electron"
-    },
-    "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "package.json"
-    ],
-    "mac": {
-      "target": "dmg"
-    },
-    "win": {
-      "target": "nsis"
-    },
-    "linux": {
-      "target": "deb"
-    }
   }
 }
