@@ -14,10 +14,10 @@ jobs:
     runs-on: macos-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
         node-version: '22'
 
@@ -37,7 +37,7 @@ jobs:
         CSC_IDENTITY_AUTO_DISCOVERY: false
 
     - name: Upload macOS artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: macos-build
         path: |
@@ -49,10 +49,10 @@ jobs:
     runs-on: windows-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
         node-version: '22'
 
@@ -71,7 +71,7 @@ jobs:
       run: npx electron-builder --win nsis --publish never
 
     - name: Upload Windows artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: windows-build
         path: |
@@ -82,10 +82,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
         node-version: '22'
 
@@ -103,7 +103,7 @@ jobs:
       run: npx electron-builder --linux deb AppImage --publish never
 
     - name: Upload Linux artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: linux-build
         path: |
@@ -119,7 +119,7 @@ jobs:
       contents: write
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v5
       with:
         path: build-artifacts
 
