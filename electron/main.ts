@@ -14,6 +14,7 @@ const createWindow = () => {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    title: 'Local LM',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

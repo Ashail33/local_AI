@@ -1,8 +1,8 @@
 {
-  "name": "react-example",
+  "name": "local-lm",
   "private": true,
   "version": "0.0.0",
-  "description": "A React Electron application",
+  "description": "Local LM - A local AI assistant desktop application",
   "author": "Your Name <your.email@example.com>",
   "type": "module",
   "main": "electron/main.ts",
@@ -47,8 +47,8 @@
     "vite": "^6.2.0"
   },
   "build": {
-    "appId": "com.example.reactapp",
-    "productName": "React Example App",
+    "appId": "com.locallm.app",
+    "productName": "Local LM",
     "directories": {
       "output": "dist-electron",
       "buildResources": "assets"
@@ -63,9 +63,13 @@
         "dmg",
         "zip"
       ],
-      "category": "public.app-category.utilities"
+      "category": "public.app-category.utilities",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
     },
     "dmg": {
+      "format": "UDZO",
       "contents": [
         {
           "x": 410,
@@ -91,7 +95,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "React Example App"
+      "shortcutName": "Local LM"
     },
     "linux": {
       "target": [

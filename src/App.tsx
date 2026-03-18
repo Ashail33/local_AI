@@ -103,7 +103,7 @@ export default function App() {
         <div className="p-4 border-b border-zinc-800">
           <h1 className="text-lg font-semibold tracking-tight flex items-center gap-2">
             <Terminal className="w-5 h-5 text-emerald-400" />
-            Local AI
+            Local LM
           </h1>
         </div>
         
