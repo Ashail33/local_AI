@@ -12,24 +12,29 @@ on:
 jobs:
   build-macos:
     runs-on: macos-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    strategy:
+      fail-fast: false
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
 
-    - name: Setup Node.js
+    - name: Setup Node.js 18
       uses: actions/setup-node@v5
       with:
         node-version: '18'
+        cache: ''
 
-    - name: Clear npm cache and node_modules
+    - name: Configure npm
+      run: |
+        npm config set legacy-peer-deps true
+        npm config set fetch-retry-mintimeout 20000
+        npm config set fetch-retry-maxtimeout 120000
+
+    - name: Clean install dependencies
       run: |
         rm -rf node_modules package-lock.json
         npm cache clean --force
-
-    - name: Install dependencies (clean install)
-      run: npm install
+        npm install
 
     - name: Build web app
       run: npm run build
@@ -57,25 +62,31 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    strategy:
+      fail-fast: false
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
 
-    - name: Setup Node.js
+    - name: Setup Node.js 18
       uses: actions/setup-node@v5
       with:
         node-version: '18'
+        cache: ''
 
-    - name: Clear npm cache and node_modules
+    - name: Configure npm
       run: |
-        rmdir /s /q node_modules 2>nul || echo "node_modules not found"
-        del package-lock.json 2>nul || echo "package-lock.json not found"
-        npm cache clean --force
+        npm config set legacy-peer-deps true
+        npm config set fetch-retry-mintimeout 20000
+        npm config set fetch-retry-maxtimeout 120000
 
-    - name: Install dependencies (clean install)
-      run: npm install
+    - name: Clean install dependencies
+      shell: pwsh
+      run: |
+        if (Test-Path node_modules) { Remove-Item -Recurse -Force node_modules }
+        if (Test-Path package-lock.json) { Remove-Item package-lock.json }
+        npm cache clean --force
+        npm install
 
     - name: Build web app
       run: npm run build
@@ -100,29 +111,34 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    strategy:
+      fail-fast: false
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
 
-    - name: Setup Node.js
+    - name: Setup Node.js 18
       uses: actions/setup-node@v5
       with:
         node-version: '18'
+        cache: ''
 
     - name: Install build tools
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential libssl-dev libffi-dev python3-dev
 
-    - name: Clear npm cache and node_modules
+    - name: Configure npm
+      run: |
+        npm config set legacy-peer-deps true
+        npm config set fetch-retry-mintimeout 20000
+        npm config set fetch-retry-maxtimeout 120000
+
+    - name: Clean install dependencies
       run: |
         rm -rf node_modules package-lock.json
         npm cache clean --force
-
-    - name: Install dependencies (clean install)
-      run: npm install
+        npm install
 
     - name: Build web app
       run: npm run build
