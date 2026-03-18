@@ -7,13 +7,8 @@ on:
     branches: [ master, main ]
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
-
-    strategy:
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
-
+  build-macos:
+    runs-on: macos-latest
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -30,15 +25,75 @@ jobs:
     - name: Build web app
       run: npm run build
 
-    - name: Build Electron app
+    - name: Build DMG (macOS)
       run: npm run build-electron
+      env:
+        CSC_IDENTITY_AUTO_DISCOVERY: false
 
-    - name: Upload artifacts
+    - name: Upload DMG artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ matrix.os }}-installer
-        path: |
-          dist-electron/*.dmg
-          dist-electron/*.exe
-          dist-electron/*.deb
+        name: macos-dmg
+        path: dist-electron/*.dmg
+        if-no-files-found: warn
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build web app
+      run: npm run build
+
+    - name: Build EXE (Windows)
+      run: npm run build-electron
+
+    - name: Upload EXE artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: windows-exe
+        path: dist-electron/*.exe
+        if-no-files-found: warn
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+
+    - name: Install build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libssl-dev libffi-dev python3-dev
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build web app
+      run: npm run build
+
+    - name: Build DEB (Linux)
+      run: npm run build-electron
+
+    - name: Upload DEB artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-deb
+        path: dist-electron/*.deb
         if-no-files-found: warn

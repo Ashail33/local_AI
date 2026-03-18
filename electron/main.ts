@@ -1,15 +1,20 @@
 import { app, BrowserWindow, Menu } from 'electron';
 import path from 'path';
-import isDev from 'electron-is-dev';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 let mainWindow: BrowserWindow | null = null;
+
+// Check if we're in development
+const isDev = process.env.NODE_ENV === 'development' || process.argv.includes('--dev');
 
 const createWindow = () => {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
     },
