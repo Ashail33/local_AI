@@ -16,14 +16,11 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: '22'
         cache: 'npm'
 
     - name: Install dependencies
       run: npm ci
-
-    - name: Build web app
-      run: npm run build
 
     - name: Build DMG (macOS)
       run: npm run build-electron
@@ -46,14 +43,11 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: '22'
         cache: 'npm'
 
     - name: Install dependencies
       run: npm ci
-
-    - name: Build web app
-      run: npm run build
 
     - name: Build EXE (Windows)
       run: npm run build-electron
@@ -74,7 +68,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'
+        node-version: '22'
         cache: 'npm'
 
     - name: Install build tools
@@ -84,9 +78,6 @@ jobs:
 
     - name: Install dependencies
       run: npm ci
-
-    - name: Build web app
-      run: npm run build
 
     - name: Build DEB (Linux)
       run: npm run build-electron
