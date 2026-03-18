@@ -1,0 +1,5 @@
+{
+  "name": "Local AI Assistant Workspace",
+  "description": "A local AI assistant that can access your file system, read/write documents, and execute Python scripts to automate tasks.",
+  "requestFramePermissions": []
+}
