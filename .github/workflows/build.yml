@@ -1,228 +1,132 @@
 name: Build and Release Desktop App
 
-env:
-  RUNNER_DEBUG: 1
-
 on:
   push:
-    branches: [ master, main ]
+    branches: [master, main]
     tags:
       - 'v*'
   pull_request:
-    branches: [ master, main ]
+    branches: [master, main]
   workflow_dispatch:
 
 jobs:
   build-macos:
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
     steps:
     - name: Checkout code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v4
 
-    - name: Setup Node.js 18
-      uses: actions/setup-node@v5
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
       with:
-        node-version: '18'
-        cache: ''
+        node-version: '22'
 
-    - name: Diagnose environment
+    - name: Install dependencies
       run: |
-        echo "=== System Info ==="
-        uname -a
-        echo "=== Node ==="
-        which node && node --version
-        echo "=== NPM ==="
-        which npm && npm --version
-        echo "=== Disk ==="
-        df -h /
-
-    - name: Configure npm
-      run: |
-        npm config set legacy-peer-deps true
-        npm config set fetch-retry-mintimeout 20000
-        npm config set fetch-retry-maxtimeout 120000
-
-    - name: Clean install dependencies
-      run: |
-        rm -rf node_modules package-lock.json
-        npm cache clean --force
-        npm install
+        rm -rf node_modules
+        npm ci --include=optional
+        echo "=== Verify oxide binding ==="
+        ls node_modules/@tailwindcss/oxide-darwin-* || echo "WARNING: no darwin oxide binding found"
 
     - name: Build web app
       run: npm run build
 
     - name: Build DMG (macOS)
-      run: npm run build-electron-mac
+      run: npx electron-builder --mac dmg zip
       env:
         CSC_IDENTITY_AUTO_DISCOVERY: false
-        DEBUG: electron-builder
 
-    - name: Check build artifacts
-      if: always()
-      run: |
-        echo "=== Build Artifacts ==="
-        ls -lah dist-electron/ || echo "dist-electron directory not found"
-        echo "=== Dist Contents ==="
-        ls -lah dist/ || echo "dist directory not found"
-
-    - name: Upload DMG artifact
-      uses: actions/upload-artifact@v5
+    - name: Upload macOS artifacts
+      uses: actions/upload-artifact@v4
       with:
         name: macos-build
-        path: dist-electron/
+        path: |
+          dist-electron/*.dmg
+          dist-electron/*.zip
         if-no-files-found: warn
 
   build-windows:
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
     steps:
     - name: Checkout code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v4
 
-    - name: Setup Node.js 18
-      uses: actions/setup-node@v5
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
       with:
-        node-version: '18'
-        cache: ''
+        node-version: '22'
 
-    - name: Diagnose environment
+    - name: Install dependencies
       run: |
-        echo "=== System Info ==="
-        systeminfo | findstr /B "OS Configuration"
-        echo "=== Node ==="
-        where node
-        node --version
-        echo "=== NPM ==="
-        where npm
-        npm --version
-
-    - name: Configure npm
-      run: |
-        npm config set legacy-peer-deps true
-        npm config set fetch-retry-mintimeout 20000
-        npm config set fetch-retry-maxtimeout 120000
-
-    - name: Clean install dependencies
+        Remove-Item -Recurse -Force node_modules -ErrorAction SilentlyContinue
+        npm ci --include=optional
+        echo "=== Verify oxide binding ==="
+        Get-ChildItem node_modules/@tailwindcss/oxide-win32-* -ErrorAction SilentlyContinue
       shell: pwsh
-      run: |
-        if (Test-Path node_modules) { Remove-Item -Recurse -Force node_modules }
-        if (Test-Path package-lock.json) { Remove-Item package-lock.json }
-        npm cache clean --force
-        npm install
 
     - name: Build web app
       run: npm run build
 
     - name: Build EXE (Windows)
-      run: npm run build-electron-win
+      run: npx electron-builder --win nsis
 
-    - name: Check build artifacts
-      if: always()
-      run: |
-        echo "=== Build Artifacts ==="
-        dir dist-electron\ || echo "dist-electron directory not found"
-        echo "=== Dist Contents ==="
-        dir dist\ || echo "dist directory not found"
-
-    - name: Upload EXE artifact
-      uses: actions/upload-artifact@v5
+    - name: Upload Windows artifacts
+      uses: actions/upload-artifact@v4
       with:
         name: windows-build
-        path: dist-electron/
+        path: |
+          dist-electron/*.exe
         if-no-files-found: warn
 
   build-linux:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
     steps:
     - name: Checkout code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v4
 
-    - name: Setup Node.js 18
-      uses: actions/setup-node@v5
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
       with:
-        node-version: '18'
-        cache: ''
+        node-version: '22'
 
-    - name: Diagnose environment
+    - name: Install dependencies
       run: |
-        echo "=== System Info ==="
-        uname -a
-        echo "=== Node ==="
-        which node && node --version
-        echo "=== NPM ==="
-        which npm && npm --version
-        echo "=== Disk ==="
-        df -h /
-        echo "=== CPU ==="
-        nproc
-
-    - name: Install build tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential libssl-dev libffi-dev python3-dev
-
-    - name: Configure npm
-      run: |
-        npm config set legacy-peer-deps true
-        npm config set fetch-retry-mintimeout 20000
-        npm config set fetch-retry-maxtimeout 120000
-
-    - name: Clean install dependencies
-      run: |
-        rm -rf node_modules package-lock.json
-        npm cache clean --force
-        npm install
+        rm -rf node_modules
+        npm ci --include=optional
+        echo "=== Verify oxide binding ==="
+        ls node_modules/@tailwindcss/oxide-linux-* || echo "WARNING: no linux oxide binding found"
 
     - name: Build web app
       run: npm run build
 
-    - name: Build DEB and AppImage (Linux)
-      run: npm run build-electron-linux
-
-    - name: Check build artifacts
-      if: always()
-      run: |
-        echo "=== Build Artifacts ==="
-        ls -lah dist-electron/ || echo "dist-electron directory not found"
-        echo "=== Dist Contents ==="
-        ls -lah dist/ || echo "dist directory not found"
+    - name: Build Linux packages
+      run: npx electron-builder --linux deb AppImage
 
     - name: Upload Linux artifacts
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v4
       with:
         name: linux-build
-        path: dist-electron/
+        path: |
+          dist-electron/*.deb
+          dist-electron/*.AppImage
         if-no-files-found: warn
 
   create-release:
     needs: [build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v5
+      uses: actions/download-artifact@v4
       with:
         path: build-artifacts
 
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         files: build-artifacts/**/*
         draft: false
         prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
-        body: |
-          ## Cross-Platform Build Artifacts
-
-          This release includes builds for:
-          - **macOS**: DMG installer and ZIP archive
-          - **Windows**: EXE installer and portable executable
-          - **Linux**: DEB package and AppImage
-
-          See [BUILD.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/BUILD.md) for installation instructions.
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        generate_release_notes: true
