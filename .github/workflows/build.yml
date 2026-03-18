@@ -1,5 +1,8 @@
 name: Build and Release Desktop App
 
+env:
+  RUNNER_DEBUG: 1
+
 on:
   push:
     branches: [ master, main ]
@@ -23,6 +26,17 @@ jobs:
       with:
         node-version: '18'
         cache: ''
+
+    - name: Diagnose environment
+      run: |
+        echo "=== System Info ==="
+        uname -a
+        echo "=== Node ==="
+        which node && node --version
+        echo "=== NPM ==="
+        which npm && npm --version
+        echo "=== Disk ==="
+        df -h /
 
     - name: Configure npm
       run: |
@@ -74,6 +88,17 @@ jobs:
         node-version: '18'
         cache: ''
 
+    - name: Diagnose environment
+      run: |
+        echo "=== System Info ==="
+        systeminfo | findstr /B "OS Configuration"
+        echo "=== Node ==="
+        where node
+        node --version
+        echo "=== NPM ==="
+        where npm
+        npm --version
+
     - name: Configure npm
       run: |
         npm config set legacy-peer-deps true
@@ -122,6 +147,19 @@ jobs:
       with:
         node-version: '18'
         cache: ''
+
+    - name: Diagnose environment
+      run: |
+        echo "=== System Info ==="
+        uname -a
+        echo "=== Node ==="
+        which node && node --version
+        echo "=== NPM ==="
+        which npm && npm --version
+        echo "=== Disk ==="
+        df -h /
+        echo "=== CPU ==="
+        nproc
 
     - name: Install build tools
       run: |
