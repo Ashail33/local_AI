@@ -12,12 +12,14 @@ on:
 jobs:
   build-macos:
     runs-on: macos-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
         node-version: '18'
         cache: 'npm'
@@ -32,12 +34,18 @@ jobs:
       run: npm run build-electron-mac
       env:
         CSC_IDENTITY_AUTO_DISCOVERY: false
+        DEBUG: electron-builder
 
-    - name: List build artifacts
-      run: ls -lh dist-electron/
+    - name: Check build artifacts
+      if: always()
+      run: |
+        echo "=== Build Artifacts ==="
+        ls -lah dist-electron/ || echo "dist-electron directory not found"
+        echo "=== Dist Contents ==="
+        ls -lah dist/ || echo "dist directory not found"
 
     - name: Upload DMG artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: macos-build
         path: dist-electron/
@@ -45,12 +53,14 @@ jobs:
 
   build-windows:
     runs-on: windows-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
         node-version: '18'
         cache: 'npm'
@@ -64,11 +74,16 @@ jobs:
     - name: Build EXE (Windows)
       run: npm run build-electron-win
 
-    - name: List build artifacts
-      run: dir dist-electron\
+    - name: Check build artifacts
+      if: always()
+      run: |
+        echo "=== Build Artifacts ==="
+        dir dist-electron\ || echo "dist-electron directory not found"
+        echo "=== Dist Contents ==="
+        dir dist\ || echo "dist directory not found"
 
     - name: Upload EXE artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: windows-build
         path: dist-electron/
@@ -76,12 +91,14 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v5
       with:
         node-version: '18'
         cache: 'npm'
@@ -100,11 +117,16 @@ jobs:
     - name: Build DEB and AppImage (Linux)
       run: npm run build-electron-linux
 
-    - name: List build artifacts
-      run: ls -lh dist-electron/
+    - name: Check build artifacts
+      if: always()
+      run: |
+        echo "=== Build Artifacts ==="
+        ls -lah dist-electron/ || echo "dist-electron directory not found"
+        echo "=== Dist Contents ==="
+        ls -lah dist/ || echo "dist directory not found"
 
     - name: Upload Linux artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v5
       with:
         name: linux-build
         path: dist-electron/
@@ -116,7 +138,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v5
       with:
         path: build-artifacts
 
