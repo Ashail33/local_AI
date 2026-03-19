@@ -117,6 +117,17 @@ const webSearchTool: FunctionDeclaration = {
 /** Tools only available to manager agents. */
 const managerToolDeclarations: FunctionDeclaration[] = [
   {
+    name: 'list_agents',
+    description:
+      'List all currently available agents in the system. Returns each agent\'s name, ID, and role. ' +
+      'ALWAYS call this first before messaging or connecting agents so you know their exact IDs.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+      required: [],
+    },
+  },
+  {
     name: 'spawn_agent',
     description:
       'Create a new worker agent and give it a name and an initial task. ' +
@@ -133,7 +144,8 @@ const managerToolDeclarations: FunctionDeclaration[] = [
   {
     name: 'message_agent',
     description:
-      'Send a message or sub-task to one of your worker agents and receive their response.',
+      'Send a message or sub-task to one of your worker agents and receive their response. ' +
+      'Use the agent ID returned by list_agents or spawn_agent.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -141,6 +153,28 @@ const managerToolDeclarations: FunctionDeclaration[] = [
         message: { type: Type.STRING, description: 'The message or task to send to the worker.' },
       },
       required: ['agentId', 'message'],
+    },
+  },
+  {
+    name: 'connect_agents',
+    description:
+      'Establish a one-way communication link so that one agent (the source) can hand off work ' +
+      'to another agent (the destination) using the handoff_to_agent tool. ' +
+      'Use this to build pipelines between worker agents. ' +
+      'For example: connect Agent A → Agent B so A can pass its completed output to B.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        fromAgentId: {
+          type: Type.STRING,
+          description: 'The ID of the agent that will SEND work (the source).',
+        },
+        toAgentId: {
+          type: Type.STRING,
+          description: 'The ID of the agent that will RECEIVE work (the destination).',
+        },
+      },
+      required: ['fromAgentId', 'toAgentId'],
     },
   },
 ];
@@ -221,6 +255,8 @@ async function ollamaChat(
 export interface AgentRef {
   id: string;
   name: string;
+  /** Role of the agent: 'manager' | 'worker' | 'authoriser' */
+  role?: string;
 }
 
 export interface ProcessChatOptions {
@@ -237,6 +273,10 @@ export interface ProcessChatOptions {
   onSpawnAgent?: (name: string, task: string) => Promise<AgentRef>;
   /** Called when the manager invokes message_agent. Returns the worker's reply. */
   onMessageAgent?: (agentId: string, message: string) => Promise<string>;
+  /** Called when the manager invokes list_agents. Returns all known agents. */
+  onListAgents?: () => Promise<AgentRef[]>;
+  /** Called when the manager invokes connect_agents. Returns a confirmation string. */
+  onConnectAgents?: (fromAgentId: string, toAgentId: string) => Promise<string>;
   /** Custom user-defined context / task framing appended to the system instruction. */
   customSystemPrompt?: string;
   /** When true (recursive manager), the agent receives the request_signoff tool. */
@@ -280,17 +320,23 @@ function buildSystemInstruction(
 
   if (isManager) {
     lines.push(
-      'You are a MANAGER AGENT. You can break complex tasks down and delegate them to worker agents.',
-      "Use 'spawn_agent' to create a new worker agent, giving it a name and an initial task description.",
-      "Use 'message_agent' to send instructions to a worker agent and receive its response.",
-      'Synthesise the workers\' responses and provide a final answer to the user.',
+      'You are a MANAGER AGENT. Your primary role is to ORCHESTRATE — break complex tasks down and delegate sub-tasks to worker agents.',
+      'IMPORTANT: You MUST use your agent tools rather than doing all the work yourself.',
+      "Step 1 — Call 'list_agents' to discover all available agents and get their exact IDs.",
+      "Step 2 — For each sub-task, call 'spawn_agent' to create a specialist worker OR call 'message_agent' to delegate to an existing agent.",
+      "Step 3 — Use 'connect_agents' to set up a pipeline so one worker can hand off its output directly to another worker.",
+      "Step 4 — Collect all worker responses with 'message_agent', synthesise the results, and give the user a final answer.",
+      'NEVER write long code blocks or execute complex tasks yourself — always delegate to a worker.',
+      'Only write brief coordination logic or summaries directly; everything else must go through your agents.',
     );
     if (spawnedAgents.length > 0) {
       lines.push(
-        `Your worker agents: ${spawnedAgents.map(a => `${a.name} (ID: ${a.id})`).join(', ')}.`,
+        `Your current worker agents (use these IDs with message_agent): ${spawnedAgents.map(a => `${a.name} (ID: ${a.id})`).join(', ')}.`,
       );
     } else {
-      lines.push('You have no worker agents yet. Use spawn_agent to create them when needed.');
+      lines.push(
+        "You have no worker agents yet. Call 'list_agents' to see existing agents, or use 'spawn_agent' to create new ones.",
+      );
     }
   }
 
@@ -335,6 +381,8 @@ export async function processChatTurn(
     spawnedAgents = [],
     onSpawnAgent,
     onMessageAgent,
+    onListAgents,
+    onConnectAgents,
     customSystemPrompt = '',
     isRecursive = false,
     onRequestSignoff,
@@ -500,6 +548,37 @@ export async function processChatTurn(
           });
         } catch (e: any) {
           response = await chat.sendMessage({ message: `message_agent failed: ${e.message}` });
+        }
+      }
+    } else if (call.name === 'list_agents') {
+      try {
+        const agentList = onListAgents ? await onListAgents() : [];
+        const listStr =
+          agentList.length > 0
+            ? agentList
+                .map(a => `- ${a.name} | ID: ${a.id} | role: ${a.role ?? 'worker'}`)
+                .join('\n')
+            : 'No agents available.';
+        onLog('Manager listed available agents.');
+        response = await chat.sendMessage({
+          message: `list_agents result (use these IDs with message_agent / connect_agents):\n${listStr}`,
+        });
+      } catch (e: any) {
+        response = await chat.sendMessage({ message: `list_agents failed: ${e.message}` });
+      }
+    } else if (call.name === 'connect_agents') {
+      if (!onConnectAgents) {
+        response = await chat.sendMessage({ message: 'connect_agents is not available in this context.' });
+      } else {
+        try {
+          onLog(`Manager connecting agents: ${call.args.fromAgentId} → ${call.args.toAgentId}`);
+          const result = await onConnectAgents(
+            call.args.fromAgentId as string,
+            call.args.toAgentId as string,
+          );
+          response = await chat.sendMessage({ message: `connect_agents result: ${result}` });
+        } catch (e: any) {
+          response = await chat.sendMessage({ message: `connect_agents failed: ${e.message}` });
         }
       }
     } else if (call.name === 'request_signoff') {
