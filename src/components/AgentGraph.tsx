@@ -104,7 +104,7 @@ function computeLayout(agents: GraphAgent[]): Map<string, Pos> {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-type ConnectMode = 'none' | 'link' | 'parent';
+type ConnectMode = 'none' | 'link' | 'parent' | 'detach';
 
 export default function AgentGraph({
   agents,
@@ -188,6 +188,12 @@ export default function AgentGraph({
       return;
     }
     e.stopPropagation();
+    if (connectMode === 'detach') {
+      // Single-click detach: remove the agent's parent
+      onRemoveParent?.(id);
+      setConnectMode('none');
+      return;
+    }
     if (!pendingId) {
       // First click: select source / child
       setPendingId(id);
@@ -242,6 +248,8 @@ export default function AgentGraph({
       ? pendingId
         ? `Click parent agent for "${agents.find(a => a.id === pendingId)?.name ?? '…'}"`
         : 'Click the child agent first'
+      : connectMode === 'detach'
+      ? 'Click an agent to remove its parent link'
       : '';
 
   return (
@@ -273,9 +281,13 @@ export default function AgentGraph({
           </button>
           {onRemoveParent && (
             <button
-              onClick={() => toggleMode('parent')}
-              title="Remove parent link — click an agent in the graph then select the parent mode"
-              className="px-2.5 py-1 text-xs rounded-lg font-medium bg-zinc-800/90 text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
+              onClick={() => toggleMode('detach')}
+              title="Remove parent link — click an agent to detach it from its parent"
+              className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-colors ${
+                connectMode === 'detach'
+                  ? 'bg-red-500 text-white'
+                  : 'bg-zinc-800/90 text-zinc-300 hover:bg-zinc-700 hover:text-white'
+              }`}
             >
               ✂ Detach
             </button>

@@ -702,6 +702,9 @@ export default function App() {
     }, {}),
   );
 
+  /** Fast O(1) agent lookup used in render. */
+  const agentById = new Map(agents.map(a => [a.id, a]));
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -848,20 +851,48 @@ export default function App() {
                 onClick={addManager}
                 className="w-full text-left flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-indigo-300 transition-colors"
               >
-                <Crown className="w-3 h-3" /> Manager
+                <Crown className="w-3 h-3" /> Add Manager
               </button>
               <button
                 onClick={addAuthoriser}
                 className="w-full text-left flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-amber-300 transition-colors"
               >
-                <Shield className="w-3 h-3" /> Authoriser
+                <Shield className="w-3 h-3" /> Add Authoriser
               </button>
+              {/* Remove Parent section: show agents that have a parent */}
+              {agents.some(a => a.parentId !== null) && (
+                <>
+                  <hr className="border-zinc-800 my-1" />
+                  <p className="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">
+                    Remove Parent
+                  </p>
+                  {agents
+                    .filter(a => a.parentId !== null)
+                    .map(a => {
+                      const parent = agentById.get(a.parentId!);
+                      return (
+                        <button
+                          key={a.id}
+                          onClick={() => handleRemoveParent(a.id)}
+                          title={`Remove parent link: ${a.name} → ${parent?.name ?? 'unknown'}`}
+                          className="w-full text-left flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-zinc-800 hover:bg-red-900/40 text-zinc-400 hover:text-red-300 transition-colors"
+                        >
+                          <X className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{a.name}</span>
+                        </button>
+                      );
+                    })}
+                </>
+              )}
               <hr className="border-zinc-800 my-1" />
               <p className="text-zinc-600 leading-relaxed">
                 Use <strong className="text-zinc-500">🔗 Link</strong> to draw a manual communication line.
               </p>
               <p className="text-zinc-600 leading-relaxed">
                 Use <strong className="text-zinc-500">⬆ Set Parent</strong> to assign hierarchy.
+              </p>
+              <p className="text-zinc-600 leading-relaxed">
+                Use <strong className="text-zinc-500">✂ Detach</strong> to remove a parent link.
               </p>
               <p className="text-zinc-600 leading-relaxed">
                 Click a node to open that agent's chat.
@@ -941,6 +972,24 @@ export default function App() {
                 )}
                 {activeAgent.name}
               </span>
+
+              {/* Parent indicator with quick-detach button */}
+              {activeAgent.parentId && (() => {
+                const parent = agentById.get(activeAgent.parentId);
+                return parent ? (
+                  <span className="flex items-center gap-1 text-xs text-zinc-500 bg-zinc-800/60 border border-zinc-700/50 rounded-md px-2 py-1">
+                    <span className="text-zinc-600">↑</span>
+                    <span className="truncate max-w-[6rem]">{parent.name}</span>
+                    <button
+                      onClick={() => handleRemoveParent(activeAgent.id)}
+                      title="Remove parent link"
+                      className="text-zinc-600 hover:text-red-400 transition-colors ml-0.5"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ) : null;
+              })()}
 
               {/* Role cycle toggle: worker → manager → authoriser → worker */}
               <button
