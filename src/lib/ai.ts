@@ -475,6 +475,9 @@ function buildSystemInstruction(
       'You do NOT have access to code-writing or scripting tools. Do not attempt to write code in any form.',
       'Your only permitted actions are: reading files for context, producing final summary documents, and managing your agents.',
       '',
+      'You have access to the internet and can search for up-to-date information using the web_search tool. Your worker agents also have internet access when you spawn them.',
+      'Use web_search to gather information, research topics, and find resources before delegating tasks to workers.',
+      '',
       'Orchestration workflow:',
       "  Step 1 — Call 'list_agents' to discover all currently available agents and their exact IDs.",
       "  Step 2 — Break the task into clear, well-defined sub-tasks. For each sub-task, either call 'spawn_agent' to create a specialist worker or call 'message_agent' to delegate to an existing agent.",
@@ -523,7 +526,7 @@ function buildSystemInstruction(
     );
   }
 
-  if (enableWebSearch) {
+  if (enableWebSearch && !isManager) {
     lines.push("You can search the internet for current information using the 'web_search' tool.");
   }
 
@@ -533,6 +536,16 @@ function buildSystemInstruction(
       "When you believe the task is done, call 'request_signoff' with a detailed summary of the work and results.",
       'If the authoriser REJECTS your work, carefully analyse their feedback and continue working to address every point.',
       'Keep iterating — spawning more agents, gathering more information, revising outputs — until you receive APPROVED status.',
+    );
+  }
+
+  if (isManager) {
+    lines.push(
+      '',
+      'You are a LIVE AUTONOMOUS AGENT. You run continuously in the background while active.',
+      'When you receive a "[Live Mode]" continuation prompt, check on your team, process outstanding work, and report status.',
+      'If there is genuinely nothing left to do right now, respond with exactly "IDLE" on the first line so the system can back off and check again later.',
+      'Otherwise, take action: spawn new workers, message existing ones, search the internet, or synthesise results.',
     );
   }
 

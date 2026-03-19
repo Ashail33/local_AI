@@ -12,6 +12,7 @@ export interface GraphAgent {
   parentId: string | null;
   isLoading: boolean;
   recursive: boolean;
+  isLive: boolean;
 }
 
 export interface MessageLink {
@@ -544,9 +545,27 @@ export default function AgentGraph({
                 </circle>
               )}
 
+              {/* Live mode pulsing ring */}
+              {agent.isLive && !agent.isLoading && (
+                <circle cx={NODE_W - 10} cy={10} r={5} fill="none" stroke="#22c55e" strokeWidth={1.5}>
+                  <animate
+                    attributeName="r"
+                    values="4;7;4"
+                    dur="2s"
+                    repeatCount="indefinite"
+                  />
+                  <animate
+                    attributeName="opacity"
+                    values="1;0.3;1"
+                    dur="2s"
+                    repeatCount="indefinite"
+                  />
+                </circle>
+              )}
+
               {/* Drag hint / tooltip */}
               <title>
-                {agent.name} ({agent.role}{agent.recursive ? ', recursive' : ''})
+                {agent.name} ({agent.role}{agent.recursive ? ', recursive' : ''}{agent.isLive ? ', live' : ''})
                 {connectMode !== 'none'
                   ? pendingId
                     ? ' — click to connect'
