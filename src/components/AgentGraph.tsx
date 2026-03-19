@@ -43,6 +43,8 @@ const NODE_H = 60;
 const H_GAP = 72;
 const V_GAP = 80;
 const MARGIN = 48;
+/** Max characters shown per message in the link chat panel. */
+const MAX_MESSAGE_PREVIEW = 500;
 
 interface Pos { x: number; y: number }
 
@@ -647,7 +649,7 @@ export default function AgentGraph({
                       >
                         <p className="font-semibold text-[10px] mb-0.5 opacity-70">{m.sender}</p>
                         <p className="whitespace-pre-wrap break-words leading-relaxed">
-                          {m.content.length > 500 ? `${m.content.slice(0, 500)}…` : m.content}
+                          {m.content.length > MAX_MESSAGE_PREVIEW ? `${m.content.slice(0, MAX_MESSAGE_PREVIEW)}…` : m.content}
                         </p>
                       </div>
                     </div>
