@@ -5,7 +5,7 @@ import {
   AlertCircle, Plus, X, Edit2, Globe, ChevronDown, Download, Settings,
   Network, Crown, Shield, RefreshCw, MessageSquare,
 } from 'lucide-react';
-import { pickDirectory, listFiles } from './lib/fs';
+import { pickDirectory, listFiles, writeBinaryFile, base64ToBytes, readFile as readFileFs, writeFile as writeFileFs, createFolder as createFolderFs } from './lib/fs';
 import { initPython, runPythonScript } from './lib/python';
 import { processChatTurn } from './lib/ai';
 import type { AgentRef } from './lib/ai';
@@ -354,6 +354,23 @@ export default function App() {
         { role: 'system', content: `Initial task from manager: ${task}` },
       ];
       setAgents(prev => [...prev, newWorker]);
+      // Notify the manager's chat thread that an agent was spawned
+      setAgents(prev =>
+        prev.map(a =>
+          a.id === managerId
+            ? {
+                ...a,
+                messages: [
+                  ...a.messages,
+                  {
+                    role: 'system' as const,
+                    content: `⚙ Spawned worker agent: **${newWorker.name}** (ID: ${newWorker.id})`,
+                  },
+                ],
+              }
+            : a,
+        ),
+      );
       // Record spawn link
       setMessageLinks(prev => [
         ...prev,
@@ -394,10 +411,29 @@ export default function App() {
             provider: target.provider,
             enableWebSearch: target.enableWebSearch,
             agentName: target.name,
+            onAutoRunScript: buildAutoRunScriptCallback(targetId),
           },
         );
 
         reply = response.content;
+
+        // Notify the manager's chat thread that a message was sent/received
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === managerId
+              ? {
+                  ...a,
+                  messages: [
+                    ...a.messages,
+                    {
+                      role: 'system' as const,
+                      content: `↔ Received response from **${target.name}**`,
+                    },
+                  ],
+                }
+              : a,
+          ),
+        );
 
         // Append the exchange to the worker's chat history
         setAgents(prev =>
@@ -579,6 +615,7 @@ export default function App() {
               target.role !== 'manager' && targetHandoffAgents.length > 0
                 ? buildHandoffAgentCallback(targetId, target.name)
                 : undefined,
+            onAutoRunScript: buildAutoRunScriptCallback(targetId),
           },
         );
 
@@ -631,6 +668,43 @@ export default function App() {
       });
 
       return reply;
+    };
+
+  /**
+   * Returns a callback that auto-runs a Python script using Pyodide (no user review required).
+   * Used by workers when calling write_document for docx/pdf formats.
+   */
+  const buildAutoRunScriptCallback = (agentId: string) =>
+    async (script: string): Promise<string> => {
+      const agent = agentsRef.current.find(a => a.id === agentId);
+      const logFn = (msg: string) =>
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === agentId ? { ...a, terminalLogs: [...a.terminalLogs, msg] } : a,
+          ),
+        );
+
+      try {
+        let py = pyodideInstance;
+        if (!py) {
+          if (!agent?.dirHandle) throw new Error('No workspace folder selected.');
+          py = await initPython(agent.dirHandle, logFn);
+          setPyodideInstance(py);
+        } else if (agent?.dirHandle) {
+          // Re-bind file helpers to the agent's current dirHandle
+          py.globals.set('read_file_js', async (f: string) => readFileFs(agent.dirHandle!, f));
+          py.globals.set('write_file_js', async (f: string, c: string) => writeFileFs(agent.dirHandle!, f, c));
+          py.globals.set('write_binary_file_js', async (f: string, b64: string) => {
+            await writeBinaryFile(agent.dirHandle!, f, base64ToBytes(b64));
+          });
+          py.globals.set('create_folder_js', async (p: string) => createFolderFs(agent.dirHandle!, p));
+        }
+        await runPythonScript(script, py, logFn);
+        await refreshFiles(agentId);
+        return 'Done.';
+      } catch (err: any) {
+        return `Error: ${err.message}`;
+      }
     };
 
   // ── Manager-specific callbacks ──────────────────────────────────────────────
@@ -743,6 +817,7 @@ export default function App() {
             agent.role !== 'manager' && handoffAgents.length > 0
               ? buildHandoffAgentCallback(agentId, agent.name)
               : undefined,
+          onAutoRunScript: buildAutoRunScriptCallback(agentId),
         },
       );
 
@@ -1356,6 +1431,33 @@ export default function App() {
                   </button>{' '}
                   to enter your key, or switch to a local Ollama model.
                 </span>
+              </div>
+            )}
+
+            {/* Manager worker agents panel */}
+            {activeAgent.role === 'manager' && agents.some(a => a.parentId === activeAgent.id) && (
+              <div className="mx-4 mt-3 p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg">
+                <p className="text-xs font-semibold text-indigo-400 mb-2 flex items-center gap-1.5">
+                  <Crown className="w-3 h-3" />
+                  Worker Agents ({agents.filter(a => a.parentId === activeAgent.id).length})
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {agents
+                    .filter(a => a.parentId === activeAgent.id)
+                    .map(worker => (
+                      <button
+                        key={worker.id}
+                        onClick={() => { setActiveAgentId(worker.id); setShowGraphView(false); }}
+                        title={`Switch to ${worker.name}`}
+                        className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 hover:bg-indigo-500/20 transition-colors"
+                      >
+                        {worker.isLoading && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
+                        )}
+                        {worker.name}
+                      </button>
+                    ))}
+                </div>
               </div>
             )}
 

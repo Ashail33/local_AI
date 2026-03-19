@@ -9,97 +9,219 @@ function getAiClient(): GoogleGenAI {
   return new GoogleGenAI({ apiKey: getGeminiApiKey() });
 }
 
+/** Encode a string to base64 in a UTF-8 safe way (no deprecated unescape). */
+function toBase64(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
+/** Generate a Python script that creates a Word (.docx) document via python-docx. */
+function buildDocxScript(filename: string, content: string): string {
+  const b64 = toBase64(content);
+  return `await micropip.install("python-docx")
+from docx import Document
+import io, base64
+
+content = base64.b64decode("${b64}").decode("utf-8")
+doc = Document()
+for line in content.split("\\n"):
+    doc.add_paragraph(line)
+
+buf = io.BytesIO()
+doc.save(buf)
+await write_binary_file("${filename}", buf.getvalue())
+`;
+}
+
+/** Generate a Python script that creates a PDF document via reportlab. */
+function buildPdfScript(filename: string, content: string): string {
+  const b64 = toBase64(content);
+  return `await micropip.install("reportlab")
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+import io, base64
+
+content = base64.b64decode("${b64}").decode("utf-8")
+buf = io.BytesIO()
+doc = SimpleDocTemplate(buf, pagesize=A4)
+styles = getSampleStyleSheet()
+story = []
+for line in content.split("\\n"):
+    if line.strip():
+        safe = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
+        story.append(Paragraph(safe, styles["Normal"]))
+    else:
+        story.append(Spacer(1, 12))
+doc.build(story)
+await write_binary_file("${filename}", buf.getvalue())
+`;
+}
+
 // ── Tool declarations ─────────────────────────────────────────────────────────
 
+const createFolderTool: FunctionDeclaration = {
+  name: 'create_folder',
+  description:
+    'Create a subfolder (or nested subfolder path) inside the workspace. ' +
+    'Use this to organise outputs into directories before writing files. ' +
+    'Supports nested paths, e.g. "reports/2024/q1".',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      folder_path: {
+        type: Type.STRING,
+        description: 'Folder path relative to workspace root (e.g., "reports" or "reports/2024").',
+      },
+    },
+    required: ['folder_path'],
+  },
+};
+
+const writeDocumentTool: FunctionDeclaration = {
+  name: 'write_document',
+  description:
+    'Write a document to the workspace in the specified format. ' +
+    'Supports plain text (.txt), Microsoft Word (.docx), and PDF (.pdf). ' +
+    'Subfolder paths are supported (e.g., "reports/summary.docx"). ' +
+    'Intermediate folders are created automatically.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      filename: {
+        type: Type.STRING,
+        description:
+          'Filename with extension, optionally with a subfolder path ' +
+          '(e.g., "report.txt", "docs/summary.docx", "output/results.pdf").',
+      },
+      content: {
+        type: Type.STRING,
+        description: 'The document content. Plain text or Markdown is accepted for all formats.',
+      },
+      format: {
+        type: Type.STRING,
+        description: 'Document format: "txt" | "docx" | "pdf".',
+      },
+    },
+    required: ['filename', 'content', 'format'],
+  },
+};
+
+const readFileTool: FunctionDeclaration = {
+  name: 'read_file',
+  description: "Read the contents of a text-based file from the user's local workspace folder.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      filename: { type: Type.STRING, description: 'The name of the file to read (e.g., data.txt). Supports subfolder paths like "reports/data.csv".' },
+    },
+    required: ['filename'],
+  },
+};
+
+const writeFileTool: FunctionDeclaration = {
+  name: 'write_file',
+  description: "Write text content to a file in the user's local workspace folder. Supports subfolder paths like \"reports/summary.txt\" — intermediate folders are created automatically.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      filename: { type: Type.STRING, description: 'The file path to write (e.g., "file.txt" or "reports/summary.txt")' },
+      content: { type: Type.STRING, description: 'The text content to write to the file' },
+    },
+    required: ['filename', 'content'],
+  },
+};
+
+const createDocumentTool: FunctionDeclaration = {
+  name: 'create_document',
+  description:
+    'Write a well-structured, human-readable document to a file in the workspace. ' +
+    'Use this for reports, specifications, plans, analyses, READMEs, meeting notes, and any ' +
+    'content intended for people to read — not just raw code files.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      filename: {
+        type: Type.STRING,
+        description: 'The filename including extension (e.g., report.md, spec.txt, README.md)',
+      },
+      content: {
+        type: Type.STRING,
+        description: 'The full document content. Markdown formatting is supported and encouraged.',
+      },
+      document_type: {
+        type: Type.STRING,
+        description:
+          'The kind of document: report | specification | readme | analysis | plan | notes | other',
+      },
+    },
+    required: ['filename', 'content'],
+  },
+};
+
+const buildToolTool: FunctionDeclaration = {
+  name: 'build_tool',
+  description:
+    'Create a reusable Python tool script and save it to the workspace. ' +
+    'Use this to build utilities, data processors, automation helpers, or any function library ' +
+    'that other agents (or the user) can run later via propose_python_script.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      tool_name: {
+        type: Type.STRING,
+        description:
+          'The tool filename without extension (e.g., "csv_parser" saves as csv_parser.py)',
+      },
+      description: {
+        type: Type.STRING,
+        description: 'What the tool does, its inputs, and how to use it.',
+      },
+      script: {
+        type: Type.STRING,
+        description: 'The Python source code, including all function and class definitions.',
+      },
+    },
+    required: ['tool_name', 'description', 'script'],
+  },
+};
+
+const proposePythonScriptTool: FunctionDeclaration = {
+  name: 'propose_python_script',
+  description:
+    'Propose a Python script to automate a task, process data, or edit complex files (Excel, Word, PDF). The script will be shown to the user for review before execution.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      script: { type: Type.STRING, description: 'The Python code to execute.' },
+      explanation: { type: Type.STRING, description: 'Explanation of what the script does.' },
+    },
+    required: ['script', 'explanation'],
+  },
+};
+
 const baseToolDeclarations: FunctionDeclaration[] = [
-  {
-    name: 'read_file',
-    description: "Read the contents of a text-based file from the user's local workspace folder.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        filename: { type: Type.STRING, description: 'The name of the file to read (e.g., data.txt)' },
-      },
-      required: ['filename'],
-    },
-  },
-  {
-    name: 'write_file',
-    description: "Write text content to a file in the user's local workspace folder.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        filename: { type: Type.STRING, description: 'The name of the file to write' },
-        content: { type: Type.STRING, description: 'The text content to write to the file' },
-      },
-      required: ['filename', 'content'],
-    },
-  },
-  {
-    name: 'create_document',
-    description:
-      'Write a well-structured, human-readable document to a file in the workspace. ' +
-      'Use this for reports, specifications, plans, analyses, READMEs, meeting notes, and any ' +
-      'content intended for people to read — not just raw code files.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        filename: {
-          type: Type.STRING,
-          description: 'The filename including extension (e.g., report.md, spec.txt, README.md)',
-        },
-        content: {
-          type: Type.STRING,
-          description: 'The full document content. Markdown formatting is supported and encouraged.',
-        },
-        document_type: {
-          type: Type.STRING,
-          description:
-            'The kind of document: report | specification | readme | analysis | plan | notes | other',
-        },
-      },
-      required: ['filename', 'content'],
-    },
-  },
-  {
-    name: 'build_tool',
-    description:
-      'Create a reusable Python tool script and save it to the workspace. ' +
-      'Use this to build utilities, data processors, automation helpers, or any function library ' +
-      'that other agents (or the user) can run later via propose_python_script.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        tool_name: {
-          type: Type.STRING,
-          description:
-            'The tool filename without extension (e.g., "csv_parser" saves as csv_parser.py)',
-        },
-        description: {
-          type: Type.STRING,
-          description: 'What the tool does, its inputs, and how to use it.',
-        },
-        script: {
-          type: Type.STRING,
-          description: 'The Python source code, including all function and class definitions.',
-        },
-      },
-      required: ['tool_name', 'description', 'script'],
-    },
-  },
-  {
-    name: 'propose_python_script',
-    description:
-      'Propose a Python script to automate a task, process data, or edit complex files (Excel, Word, PDF). The script will be shown to the user for review before execution.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        script: { type: Type.STRING, description: 'The Python code to execute.' },
-        explanation: { type: Type.STRING, description: 'Explanation of what the script does.' },
-      },
-      required: ['script', 'explanation'],
-    },
-  },
+  readFileTool,
+  writeFileTool,
+  createDocumentTool,
+  buildToolTool,
+  proposePythonScriptTool,
+  createFolderTool,
+  writeDocumentTool,
+];
+
+/**
+ * Restricted tool set for manager agents.
+ * Managers may read files for context and write final summary documents,
+ * but they must NOT write code, build tools, or propose scripts — all
+ * implementation work must be delegated to worker agents.
+ */
+const managerBaseToolDeclarations: FunctionDeclaration[] = [
+  readFileTool,
+  createDocumentTool,
+  createFolderTool,
 ];
 
 const webSearchTool: FunctionDeclaration = {
@@ -287,6 +409,12 @@ export interface ProcessChatOptions {
   handoffAgents?: AgentRef[];
   /** Called when the agent invokes handoff_to_agent. Returns the target agent's reply. */
   onHandoffToAgent?: (agentId: string, message: string) => Promise<string>;
+  /**
+   * Called when an agent invokes write_document for docx/pdf formats.
+   * Executes a Python script automatically (without user review).
+   * Returns a result string.
+   */
+  onAutoRunScript?: (script: string) => Promise<string>;
 }
 
 function buildSystemInstruction(
@@ -298,36 +426,28 @@ function buildSystemInstruction(
   customSystemPrompt: string = '',
   handoffAgents: AgentRef[] = [],
 ): string {
-  const lines = [
-    `You are ${agentName}, an intelligent AI copilot.`,
-    'You help users think through problems, write code, create documents, build tools, and accomplish real-world tasks end-to-end.',
-    'You have access to a local workspace folder and a rich set of tools. Think step-by-step, choose the right tool for each sub-task, and produce high-quality, actionable output.',
-    'Use \'create_document\' to write reports, plans, specifications, analyses, READMEs, and any other human-readable documents.',
-    'Use \'build_tool\' to create reusable Python utilities or scripts that can be used by you or other agents later.',
-    'Use \'read_file\' and \'write_file\' for direct file read/write access.',
-    'If the user asks you to process complex binary files (Excel, Word, PDF, PowerPoint, images),',
-    'you MUST write a Python script to do it because you cannot read binary files directly.',
-    "Propose Python scripts using the 'propose_python_script' tool; the user will review and run them.",
-    'In your Python scripts you can install packages with micropip',
-    '(e.g. `await micropip.install("openpyxl")`).',
-    'Use `content = await read_file("file.txt")` and `await write_file("file.txt", content)`',
-    'in scripts for workspace file access.',
-  ];
-
-  if (enableWebSearch) {
-    lines.push("You can search the internet for current information using the 'web_search' tool.");
-  }
+  const lines: string[] = [];
 
   if (isManager) {
     lines.push(
-      'You are a MANAGER AGENT. Your primary role is to ORCHESTRATE — break complex tasks down and delegate sub-tasks to worker agents.',
-      'IMPORTANT: You MUST use your agent tools rather than doing all the work yourself.',
-      "Step 1 — Call 'list_agents' to discover all available agents and get their exact IDs.",
-      "Step 2 — For each sub-task, call 'spawn_agent' to create a specialist worker OR call 'message_agent' to delegate to an existing agent.",
-      "Step 3 — Use 'connect_agents' to set up a pipeline so one worker can hand off its output directly to another worker.",
-      "Step 4 — Collect all worker responses with 'message_agent', synthesise the results, and give the user a final answer.",
-      'NEVER write long code blocks or execute complex tasks yourself — always delegate to a worker.',
-      'Only write brief coordination logic or summaries directly; everything else must go through your agents.',
+      `You are ${agentName}, a MANAGER AGENT. Your sole responsibility is to ORCHESTRATE tasks by breaking them down and delegating every sub-task to worker agents.`,
+      'You are a coordinator, NOT an implementer. You must NEVER write code, scripts, or implement solutions yourself — that is always the job of your worker agents.',
+      'You do NOT have access to code-writing or scripting tools. Do not attempt to write code in any form.',
+      'Your only permitted actions are: reading files for context, producing final summary documents, and managing your agents.',
+      '',
+      'Orchestration workflow:',
+      "  Step 1 — Call 'list_agents' to discover all currently available agents and their exact IDs.",
+      "  Step 2 — Break the task into clear, well-defined sub-tasks. For each sub-task, either call 'spawn_agent' to create a specialist worker or call 'message_agent' to delegate to an existing agent.",
+      "  Step 3 — Optionally, call 'connect_agents' to establish a pipeline so one worker can hand its output directly to another worker.",
+      "  Step 4 — Collect results from all workers via 'message_agent', synthesise the findings, and deliver a final answer or summary to the user.",
+      '',
+      'Rules you must always follow:',
+      '  • NEVER write or generate code, Python scripts, shell commands, or any implementation yourself.',
+      '  • NEVER use write_file, build_tool, or propose_python_script — you do not have these tools.',
+      '  • ALWAYS delegate implementation, data processing, file writing, and computation to worker agents.',
+      '  • Keep your own responses to coordination decisions, task breakdowns, and final summaries only.',
+      '  • Format your final response with clear Markdown sections (## headings, bullet lists). Never paste raw code blocks or script output from workers — describe results in your own words.',
+      '  • When presenting results: open with a brief executive summary, then list what each worker produced, then give your synthesis and recommendations.',
     );
     if (spawnedAgents.length > 0) {
       lines.push(
@@ -338,6 +458,29 @@ function buildSystemInstruction(
         "You have no worker agents yet. Call 'list_agents' to see existing agents, or use 'spawn_agent' to create new ones.",
       );
     }
+  } else {
+    lines.push(
+      `You are ${agentName}, an intelligent AI copilot.`,
+      'You help users think through problems, write code, create documents, build tools, and accomplish real-world tasks end-to-end.',
+      'You have access to a local workspace folder and a rich set of tools. Think step-by-step, choose the right tool for each sub-task, and produce high-quality, actionable output.',
+      'Use \'create_document\' to write reports, plans, specifications, analyses, READMEs, and any other human-readable documents.',
+      'Use \'build_tool\' to create reusable Python utilities or scripts that can be used by you or other agents later.',
+      'Use \'read_file\' and \'write_file\' for direct file read/write access.',
+      'If the user asks you to process complex binary files (Excel, Word, PDF, PowerPoint, images),',
+      'you MUST write a Python script to do it because you cannot read binary files directly.',
+      "Propose Python scripts using the 'propose_python_script' tool; the user will review and run them.",
+      'In your Python scripts you can install packages with micropip',
+      '(e.g. `await micropip.install("openpyxl")`).',
+      'Use `content = await read_file("file.txt")` and `await write_file("file.txt", content)`',
+      'in scripts for workspace file access.',
+      'Use \'write_document\' to write .txt, .docx (Word), or .pdf files to the workspace.',
+      'Use \'create_folder\' to create subfolders (e.g., "reports/2024") before writing files into them.',
+      'File paths support subfolders: write to "reports/summary.txt" instead of just "summary.txt".',
+    );
+  }
+
+  if (enableWebSearch) {
+    lines.push("You can search the internet for current information using the 'web_search' tool.");
   }
 
   if (isManager && isRecursive) {
@@ -388,6 +531,7 @@ export async function processChatTurn(
     onRequestSignoff,
     handoffAgents = [],
     onHandoffToAgent,
+    onAutoRunScript,
   } = options;
 
   const systemInstruction = buildSystemInstruction(
@@ -415,7 +559,9 @@ export async function processChatTurn(
   // ── Gemini path (with tool calling) ──────────────────────────────────────
   const ai = getAiClient();
   const tools = [
-    ...baseToolDeclarations,
+    // Managers get a restricted base tool set (no code-writing tools).
+    // Workers get the full base tool set.
+    ...(isManager ? managerBaseToolDeclarations : baseToolDeclarations),
     ...(enableWebSearch ? [webSearchTool] : []),
     ...(isManager ? managerToolDeclarations : []),
     ...(isManager && isRecursive ? [requestSignoffTool] : []),
@@ -493,6 +639,66 @@ export async function processChatTurn(
         });
       } catch (e: any) {
         response = await chat.sendMessage({ message: `Tool build_tool failed: ${e.message}` });
+      }
+    } else if (call.name === 'create_folder') {
+      if (!dirHandle) throw new Error('No directory selected.');
+      try {
+        const { createFolder } = await import('./fs');
+        await createFolder(dirHandle, call.args.folder_path as string);
+        onLog(`Folder created: ${call.args.folder_path}`);
+        response = await chat.sendMessage({
+          message: `Tool create_folder succeeded. Folder "${call.args.folder_path}" is ready.`,
+        });
+      } catch (e: any) {
+        response = await chat.sendMessage({ message: `Tool create_folder failed: ${e.message}` });
+      }
+    } else if (call.name === 'write_document') {
+      if (!dirHandle) throw new Error('No directory selected.');
+      const fmt = ((call.args.format as string) ?? 'txt').toLowerCase();
+      const filename = call.args.filename as string;
+      const content = call.args.content as string;
+      try {
+        if (fmt === 'txt') {
+          await writeFile(dirHandle, filename, content);
+          onLog(`Document written: ${filename} (txt)`);
+          response = await chat.sendMessage({
+            message: `Tool write_document succeeded. Text document saved as "${filename}".`,
+          });
+        } else if (fmt === 'docx') {
+          const script = buildDocxScript(filename, content);
+          if (onAutoRunScript) {
+            const result = await onAutoRunScript(script);
+            onLog(`Document written: ${filename} (docx)`);
+            response = await chat.sendMessage({
+              message: `Tool write_document succeeded. Word document saved as "${filename}". ${result}`,
+            });
+          } else {
+            onProposeScript(script, `Create Word document: ${filename}`);
+            response = await chat.sendMessage({
+              message: `Tool write_document: Python script proposed to create Word document "${filename}". The user must run it.`,
+            });
+          }
+        } else if (fmt === 'pdf') {
+          const script = buildPdfScript(filename, content);
+          if (onAutoRunScript) {
+            const result = await onAutoRunScript(script);
+            onLog(`Document written: ${filename} (pdf)`);
+            response = await chat.sendMessage({
+              message: `Tool write_document succeeded. PDF document saved as "${filename}". ${result}`,
+            });
+          } else {
+            onProposeScript(script, `Create PDF document: ${filename}`);
+            response = await chat.sendMessage({
+              message: `Tool write_document: Python script proposed to create PDF "${filename}". The user must run it.`,
+            });
+          }
+        } else {
+          response = await chat.sendMessage({
+            message: `Tool write_document failed: unknown format "${fmt}". Supported: txt, docx, pdf.`,
+          });
+        }
+      } catch (e: any) {
+        response = await chat.sendMessage({ message: `Tool write_document failed: ${e.message}` });
       }
     } else if (call.name === 'propose_python_script') {
       onProposeScript(call.args.script as string, call.args.explanation as string);
