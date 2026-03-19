@@ -2,29 +2,33 @@
  * review-agent.mjs
  *
  * GitHub Actions review agent.
- * Reads a git diff from stdin (or the DIFF_TEXT env var), sends it to Gemini,
- * and appends a dated entry to CODEBASE_LOG.md.
+ * Reads a git diff from stdin (or the DIFF_TEXT env var), sends it to the
+ * GitHub Models API (https://models.github.ai/inference), and appends a
+ * dated entry to CODEBASE_LOG.md.
+ *
+ * No external API keys or packages are required — authentication uses the
+ * workflow's built-in GITHUB_TOKEN.
  *
  * Usage:
- *   git diff HEAD~1 HEAD | node scripts/review-agent.mjs
+ *   git diff HEAD~1 HEAD | GITHUB_TOKEN=<token> node scripts/review-agent.mjs
  *
  * Required env vars:
- *   GEMINI_API_KEY  – Google Gemini API key
+ *   GITHUB_TOKEN  – GitHub token (automatically set in GitHub Actions)
  *
  * Optional env vars:
- *   COMMIT_SHA      – short SHA for the log header
- *   COMMIT_MSG      – commit message for context
- *   COMMIT_AUTHOR   – author display name
- *   LOG_FILE        – path to the log file (default: CODEBASE_LOG.md)
+ *   COMMIT_SHA    – short SHA for the log header
+ *   COMMIT_MSG    – commit message for context
+ *   COMMIT_AUTHOR – author display name
+ *   LOG_FILE      – path to the log file (default: CODEBASE_LOG.md)
  */
 
-import { GoogleGenAI } from '@google/genai';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
-const MODEL_ID = 'gemini-2.0-flash';
+const GITHUB_MODELS_ENDPOINT = 'https://models.github.ai/inference';
+const MODEL_ID = 'openai/gpt-4o-mini';
 const LOG_FILE = resolve(process.env.LOG_FILE ?? 'CODEBASE_LOG.md');
 const MAX_DIFF_CHARS = 20_000; // truncate very large diffs to stay within token limits
 
@@ -50,17 +54,15 @@ const diff =
     ? rawDiff.slice(0, MAX_DIFF_CHARS) + '\n... (diff truncated)'
     : rawDiff;
 
-// ── Gemini review ───────────────────────────────────────────────────────────
+// ── GitHub Models review ────────────────────────────────────────────────────
 
-const apiKey = process.env.GEMINI_API_KEY;
-if (!apiKey) {
-  console.error('GEMINI_API_KEY environment variable is not set.');
+const githubToken = process.env.GITHUB_TOKEN;
+if (!githubToken) {
+  console.error('GITHUB_TOKEN environment variable is not set.');
   process.exit(1);
 }
 
-const ai = new GoogleGenAI({ apiKey });
-
-const commitSha = process.env.COMMIT_SHA ?? 'unknown';
+const commitSha = (process.env.COMMIT_SHA ?? 'unknown').slice(0, 7);
 const commitMsg = process.env.COMMIT_MSG ?? '';
 const commitAuthor = process.env.COMMIT_AUTHOR ?? '';
 
@@ -81,18 +83,32 @@ Write a concise technical summary (3-8 bullet points) of what this commit does. 
 
 Keep the summary factual and to the point. Do not include a greeting or closing.`;
 
-console.log(`Sending diff to Gemini (${MODEL_ID})…`);
+console.log(`Sending diff to GitHub Models (${MODEL_ID})…`);
 
 let summary;
 try {
-  const response = await ai.models.generateContent({
-    model: MODEL_ID,
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: { temperature: 0.2 },
+  const res = await fetch(`${GITHUB_MODELS_ENDPOINT}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${githubToken}`,
+    },
+    body: JSON.stringify({
+      model: MODEL_ID,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+    }),
   });
-  summary = response.text?.trim() ?? '(no summary returned)';
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`HTTP ${res.status}: ${text}`);
+  }
+
+  const data = await res.json();
+  summary = data.choices?.[0]?.message?.content?.trim() ?? '(no summary returned)';
 } catch (err) {
-  console.error('Gemini request failed:', err.message);
+  console.error('GitHub Models request failed:', err.message);
   process.exit(1);
 }
 
