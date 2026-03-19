@@ -467,6 +467,23 @@ export default function App() {
           ),
         );
 
+        // Record the worker's response in the spawn link so the network view
+        // shows the complete exchange.
+        setMessageLinks(prev =>
+          prev.map(l =>
+            l.fromId === managerId && l.toId === newWorker.id && l.messageCount === 0
+              ? {
+                  ...l,
+                  messageCount: 1,
+                  messages: [
+                    ...l.messages,
+                    { sender: newWorker.name, content: initialResponse ?? '' },
+                  ],
+                }
+              : l,
+          ),
+        );
+
         // Refresh the worker's file list after it may have written files
         if (newWorker.dirHandle) {
           const fileList = await listFiles(newWorker.dirHandle);
@@ -515,6 +532,14 @@ export default function App() {
           ),
         );
 
+      // Build the set of agents this worker is authorized to hand off to
+      // (includes the parent manager so the worker can reply back).
+      const workerHandoffTargets: AgentRef[] = connectedLinksRef.current
+        .filter(l => l.fromId === targetId)
+        .map(l => agentsRef.current.find(a => a.id === l.toId))
+        .filter((a): a is Agent => Boolean(a))
+        .map(a => ({ id: a.id, name: a.name }));
+
       let reply = '';
       try {
         const response = await processChatTurn(
@@ -530,6 +555,10 @@ export default function App() {
             agentName: target.name,
             customSystemPrompt: target.systemPrompt,
             onAutoRunScript: buildAutoRunScriptCallback(targetId),
+            handoffAgents: workerHandoffTargets,
+            onHandoffToAgent: workerHandoffTargets.length > 0
+              ? buildHandoffAgentCallback(targetId, target.name)
+              : undefined,
           },
         );
 
@@ -718,6 +747,7 @@ export default function App() {
             customSystemPrompt: target.systemPrompt,
             isManager: target.role === 'manager',
             isRecursive: target.role === 'manager' && target.recursive,
+            isLive: target.role === 'manager' && target.isLive,
             spawnedAgents: agentsRef.current
               .filter(a => a.parentId === targetId)
               .map(a => ({ id: a.id, name: a.name })),
@@ -925,6 +955,7 @@ export default function App() {
           agentName: agent.name,
           isManager: agent.role === 'manager',
           isRecursive: agent.role === 'manager' && agent.recursive,
+          isLive: agent.role === 'manager' && agent.isLive,
           customSystemPrompt: agent.systemPrompt,
           spawnedAgents,
           onSpawnAgent: agent.role === 'manager' ? buildSpawnAgentCallback(agentId) : undefined,
@@ -1015,6 +1046,7 @@ export default function App() {
           agentName: agent.name,
           isManager: true,
           isRecursive: agent.recursive,
+          isLive: true,
           customSystemPrompt: agent.systemPrompt,
           spawnedAgents,
           onSpawnAgent: buildSpawnAgentCallback(agentId),

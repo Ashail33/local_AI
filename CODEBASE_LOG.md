@@ -263,3 +263,33 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - A dependency array has been added to the `useEffect` hook, specifically including `agents`, which ensures that the effect runs correctly when the `agents` state changes.
 - The change to IDLE detection is a bug fix that addresses potential false positives in idle state detection.
 - Future developers should be aware of the stricter IDLE detection logic and the importance of including all relevant dependencies in `useEffect` to avoid unintended behavior.
+
+---
+
+## 2026-03-19 23:47:46 UTC — `44b8a36`
+> Fix manager agent creation and bidirectional messaging
+
+- Add handoffAgents/onHandoffToAgent to buildMessageAgentCallback so
+  workers can message back to their parent manager via handoff_to_agent
+- Record worker's initialResponse in spawn message link so the network
+  view shows the complete exchange (messageCount: 1, response included)
+- Add isLive parameter to system prompt builder; only include live-mode
+  instructions when the agent is actually in live mode (avoids confusing
+  non-live managers into waiting for live-mode prompts)
+- Strengthen manager system prompt with explicit CRITICAL instruction to
+  always call spawn_agent tool (not narrate) when asked to create agents
+- Reorder "no workers yet" prompt to prioritise spawn_agent over list_agents
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **Files Changed**: The commit modifies `src/App.tsx` and `src/lib/ai.ts`, focusing on enhancing agent communication and system prompts within the AI application.
+  
+- **New Features**: Introduces bidirectional messaging capabilities between workers and the parent manager through the `handoffAgents` and `onHandoffToAgent` parameters, allowing for more interactive agent behavior.
+
+- **Bug Fixes**: Corrects the handling of the worker's initial response in the message link to ensure that the network view accurately reflects the complete message exchange.
+
+- **System Prompt Enhancements**: Strengthens the manager's system prompt with explicit instructions to always call the `spawn_agent` tool when creating agents, reducing the likelihood of incorrect behavior.
+
+- **Design Decisions**: Implements a conditional inclusion of live-mode instructions based on the `isLive` parameter, preventing confusion for non-live managers and ensuring clarity in agent operations.
+
+- **Future Considerations**: Developers should be aware of the new `isLive` parameter in the `ProcessChatOptions` interface and its implications for system prompt behavior, as well as the importance of maintaining accurate message links for network visualization.
