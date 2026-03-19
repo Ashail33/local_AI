@@ -250,3 +250,16 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - This change enhances the clarity of the code by providing a named constant, making it easier for future developers to understand the purpose of the limit.
 - No new features or bug fixes are introduced; the change is purely a refactor for better code practices.
 - Future developers should ensure that any changes to the message preview length are reflected in the `MAX_MESSAGE_PREVIEW` constant to maintain consistency across the application.
+
+---
+
+## 2026-03-19 20:43:35 UTC — `0c156be`
+> fix: address code review - stricter IDLE detection, add useEffect dependency array
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- The commit modifies the `src/App.tsx` file to enhance the IDLE detection logic and improve the use of React's `useEffect` hook.
+- The IDLE detection now checks if the first line of the response message strictly matches "IDLE" instead of checking if it starts with "IDLE", ensuring more accurate detection.
+- A dependency array has been added to the `useEffect` hook, specifically including `agents`, which ensures that the effect runs correctly when the `agents` state changes.
+- The change to IDLE detection is a bug fix that addresses potential false positives in idle state detection.
+- Future developers should be aware of the stricter IDLE detection logic and the importance of including all relevant dependencies in `useEffect` to avoid unintended behavior.
