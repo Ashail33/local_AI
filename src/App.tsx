@@ -3,22 +3,31 @@ import Markdown from 'react-markdown';
 import {
   FolderOpen, FileText, Send, Play, Terminal, CheckCircle2,
   AlertCircle, Plus, X, Edit2, Globe, ChevronDown, Download, Settings,
+  Network, Crown,
 } from 'lucide-react';
 import { pickDirectory, listFiles } from './lib/fs';
 import { initPython, runPythonScript } from './lib/python';
 import { processChatTurn } from './lib/ai';
+import type { AgentRef } from './lib/ai';
 import {
   listOllamaModels, pullOllamaModel, testOllamaConnection,
   getOllamaUrl, setOllamaUrl,
   DEFAULT_GEMINI_MODELS, POPULAR_OLLAMA_MODELS,
   type Model, type ModelProvider,
 } from './lib/models';
+import AgentGraph, { type MessageLink } from './components/AgentGraph';
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type Message = { role: 'user' | 'assistant' | 'system'; content: string };
 
 interface Agent {
   id: string;
   name: string;
+  /** Manager agents can spawn workers and delegate tasks to them. */
+  role: 'manager' | 'worker';
+  /** ID of the manager that spawned this agent, or null for root agents. */
+  parentId: string | null;
   modelId: string;
   provider: ModelProvider;
   enableWebSearch: boolean;
@@ -33,10 +42,12 @@ interface Agent {
 
 let agentCounter = 1;
 
-function createAgent(name?: string): Agent {
+function createAgent(name?: string, role: Agent['role'] = 'worker', parentId: string | null = null): Agent {
   return {
     id: crypto.randomUUID(),
     name: name ?? `Agent ${agentCounter++}`,
+    role,
+    parentId,
     modelId: 'gemini-3.1-pro-preview',
     provider: 'gemini',
     enableWebSearch: false,
@@ -56,8 +67,10 @@ function createAgent(name?: string): Agent {
   };
 }
 
+// ── Component ─────────────────────────────────────────────────────────────────
+
 export default function App() {
-  const initialAgent = createAgent();
+  const initialAgent = createAgent(undefined, 'worker', null);
   const [agents, setAgents] = useState<Agent[]>([initialAgent]);
   const [activeAgentId, setActiveAgentId] = useState<string>(initialAgent.id);
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
@@ -68,6 +81,10 @@ export default function App() {
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
   const [downloadStatus, setDownloadStatus] = useState('');
   const [pyodideInstance, setPyodideInstance] = useState<any>(null);
+  /** Communication links recorded during manager ↔ worker interactions. */
+  const [messageLinks, setMessageLinks] = useState<MessageLink[]>([]);
+  /** Toggle between the chat view and the agent-topology graph view. */
+  const [showGraphView, setShowGraphView] = useState(false);
 
   // Ollama settings
   const [showSettings, setShowSettings] = useState(false);
@@ -77,6 +94,12 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const tabInputRef = useRef<HTMLInputElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  /**
+   * Always-current reference to agents used in async callbacks where the React
+   * closure would otherwise capture a stale value.
+   */
+  const agentsRef = useRef<Agent[]>(agents);
+  useEffect(() => { agentsRef.current = agents; }, [agents]);
 
   const activeAgent = agents.find(a => a.id === activeAgentId) ?? agents[0];
 
@@ -85,7 +108,7 @@ export default function App() {
     listOllamaModels().then(models => setOllamaModels(models));
   }, []);
 
-  // Scroll to bottom when active agent's messages change
+  // Scroll to bottom when active agent's messages/logs change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [activeAgent?.messages, activeAgent?.terminalLogs]);
@@ -119,6 +142,7 @@ export default function App() {
     const agent = createAgent();
     setAgents(prev => [...prev, agent]);
     setActiveAgentId(agent.id);
+    setShowGraphView(false);
   };
 
   const removeAgent = (id: string, e: React.MouseEvent) => {
@@ -135,6 +159,8 @@ export default function App() {
       }
       return filtered;
     });
+    // Remove message links involving this agent
+    setMessageLinks(prev => prev.filter(l => l.fromId !== id && l.toId !== id));
   };
 
   const startRenameTab = (agent: Agent) => {
@@ -179,17 +205,135 @@ export default function App() {
   };
 
   const refreshFiles = async (agentId: string) => {
-    const agent = agents.find(a => a.id === agentId);
+    const agent = agentsRef.current.find(a => a.id === agentId);
     if (agent?.dirHandle) {
       const fileList = await listFiles(agent.dirHandle);
       updateAgent(agentId, { files: fileList });
     }
   };
 
+  // ── Manager callbacks ───────────────────────────────────────────────────────
+
+  /**
+   * Called when a manager agent uses the spawn_agent tool.
+   * Creates a new worker agent parented to managerId and returns its ref.
+   */
+  const buildSpawnAgentCallback = (managerId: string) =>
+    async (name: string, task: string): Promise<AgentRef> => {
+      const managerAgent = agentsRef.current.find(a => a.id === managerId);
+      const newWorker = createAgent(name, 'worker', managerId);
+      // Inherit workspace from manager if available
+      if (managerAgent?.dirHandle) {
+        newWorker.dirHandle = managerAgent.dirHandle;
+        newWorker.files = managerAgent.files;
+      }
+      // Seed the worker's history with the initial task as a system note
+      newWorker.messages = [
+        ...newWorker.messages,
+        { role: 'system', content: `Initial task from manager: ${task}` },
+      ];
+      setAgents(prev => [...prev, newWorker]);
+      // Record spawn link
+      setMessageLinks(prev => [
+        ...prev,
+        { fromId: managerId, toId: newWorker.id, messageCount: 0, lastMessage: task },
+      ]);
+      return { id: newWorker.id, name: newWorker.name };
+    };
+
+  /**
+   * Called when a manager agent uses the message_agent tool.
+   * Runs the target worker's LLM with the given message and records the link.
+   */
+  const buildMessageAgentCallback = (managerId: string, managerName: string) =>
+    async (targetId: string, message: string): Promise<string> => {
+      const target = agentsRef.current.find(a => a.id === targetId);
+      if (!target) throw new Error(`Agent with ID "${targetId}" not found.`);
+
+      // Show the worker as loading
+      setAgents(prev => prev.map(a => a.id === targetId ? { ...a, isLoading: true } : a));
+
+      const workerLog = (msg: string) =>
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === targetId ? { ...a, terminalLogs: [...a.terminalLogs, msg] } : a,
+          ),
+        );
+
+      let reply = '';
+      try {
+        const response = await processChatTurn(
+          message,
+          target.messages.filter(m => m.role !== 'system'),
+          target.dirHandle,
+          (script, explanation) => updateAgent(targetId, { proposedScript: { code: script, explanation } }),
+          workerLog,
+          {
+            modelId: target.modelId,
+            provider: target.provider,
+            enableWebSearch: target.enableWebSearch,
+            agentName: target.name,
+          },
+        );
+
+        reply = response.content;
+
+        // Append the exchange to the worker's chat history
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === targetId
+              ? {
+                  ...a,
+                  isLoading: false,
+                  messages: [
+                    ...a.messages,
+                    { role: 'user', content: `[From ${managerName}]: ${message}` },
+                    response as Message,
+                  ],
+                }
+              : a,
+          ),
+        );
+      } catch (err: any) {
+        reply = `Error: ${err.message}`;
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === targetId
+              ? {
+                  ...a,
+                  isLoading: false,
+                  messages: [
+                    ...a.messages,
+                    { role: 'system', content: `Error from manager call: ${err.message}` },
+                  ],
+                }
+              : a,
+          ),
+        );
+      }
+
+      // Update or create message link
+      setMessageLinks(prev => {
+        const existing = prev.find(
+          l => l.fromId === managerId && l.toId === targetId && l.messageCount > 0,
+        );
+        if (existing) {
+          return prev.map(l =>
+            l.fromId === managerId && l.toId === targetId
+              ? { ...l, messageCount: l.messageCount + 1, lastMessage: message }
+              : l,
+          );
+        }
+        return [...prev, { fromId: managerId, toId: targetId, messageCount: 1, lastMessage: message }];
+      });
+
+      return reply;
+    };
+
   // ── Chat ────────────────────────────────────────────────────────────────────
 
   const handleSendMessage = async (agentId: string) => {
-    const agent = agents.find(a => a.id === agentId);
+    const agent = agentsRef.current.find(a => a.id === agentId);
     if (!agent || !agent.input.trim() || agent.isLoading) return;
 
     const userMsg = agent.input;
@@ -199,17 +343,18 @@ export default function App() {
       messages: [...agent.messages, { role: 'user', content: userMsg }],
     });
 
-    const logToTerminal = (msg: string) => {
+    const logToTerminal = (msg: string) =>
       setAgents(prev =>
-        prev.map(a =>
-          a.id === agentId ? { ...a, terminalLogs: [...a.terminalLogs, msg] } : a,
-        ),
+        prev.map(a => a.id === agentId ? { ...a, terminalLogs: [...a.terminalLogs, msg] } : a),
       );
-    };
 
-    const onProposeScript = (script: string, explanation: string) => {
+    const onProposeScript = (script: string, explanation: string) =>
       updateAgent(agentId, { proposedScript: { code: script, explanation } });
-    };
+
+    // Compute which agents this manager has spawned (for the system prompt)
+    const spawnedAgents: AgentRef[] = agentsRef.current
+      .filter(a => a.parentId === agentId)
+      .map(a => ({ id: a.id, name: a.name }));
 
     try {
       const responseMsg = await processChatTurn(
@@ -223,8 +368,16 @@ export default function App() {
           provider: agent.provider,
           enableWebSearch: agent.enableWebSearch,
           agentName: agent.name,
+          isManager: agent.role === 'manager',
+          spawnedAgents,
+          onSpawnAgent: agent.role === 'manager' ? buildSpawnAgentCallback(agentId) : undefined,
+          onMessageAgent:
+            agent.role === 'manager'
+              ? buildMessageAgentCallback(agentId, agent.name)
+              : undefined,
         },
       );
+
       setAgents(prev =>
         prev.map(a =>
           a.id === agentId
@@ -240,10 +393,7 @@ export default function App() {
             ? {
                 ...a,
                 isLoading: false,
-                messages: [
-                  ...a.messages,
-                  { role: 'system', content: `Error: ${err.message}` },
-                ],
+                messages: [...a.messages, { role: 'system', content: `Error: ${err.message}` }],
               }
             : a,
         ),
@@ -254,16 +404,13 @@ export default function App() {
   // ── Python script runner ────────────────────────────────────────────────────
 
   const handleRunScript = async (agentId: string) => {
-    const agent = agents.find(a => a.id === agentId);
+    const agent = agentsRef.current.find(a => a.id === agentId);
     if (!agent?.proposedScript || !agent.dirHandle) return;
 
-    const logToTerminal = (msg: string) => {
+    const logToTerminal = (msg: string) =>
       setAgents(prev =>
-        prev.map(a =>
-          a.id === agentId ? { ...a, terminalLogs: [...a.terminalLogs, msg] } : a,
-        ),
+        prev.map(a => a.id === agentId ? { ...a, terminalLogs: [...a.terminalLogs, msg] } : a),
       );
-    };
 
     try {
       let py = pyodideInstance;
@@ -279,10 +426,7 @@ export default function App() {
             ? {
                 ...a,
                 proposedScript: null,
-                messages: [
-                  ...a.messages,
-                  { role: 'system', content: 'Python script execution completed.' },
-                ],
+                messages: [...a.messages, { role: 'system', content: 'Python script execution completed.' }],
               }
             : a,
         ),
@@ -321,7 +465,6 @@ export default function App() {
     setOllamaUrl(ollamaUrlInput);
     setConnectionStatus('idle');
     setShowSettings(false);
-    // Refresh model list with the new URL
     const updated = await listOllamaModels();
     setOllamaModels(updated);
   };
@@ -348,6 +491,15 @@ export default function App() {
   const currentModelLabel =
     allModels.find(m => m.id === activeAgent.modelId)?.name ?? activeAgent.modelId;
 
+  // Deduplicate message links: only the most-recent link per (from,to) pair
+  const dedupedMessageLinks: MessageLink[] = Object.values(
+    messageLinks.reduce<Record<string, MessageLink>>((acc, l) => {
+      const key = `${l.fromId}→${l.toId}`;
+      if (!acc[key] || l.messageCount > acc[key].messageCount) acc[key] = l;
+      return acc;
+    }, {}),
+  );
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -359,15 +511,18 @@ export default function App() {
           {agents.map(agent => (
             <div
               key={agent.id}
-              onClick={() => setActiveAgentId(agent.id)}
+              onClick={() => { setActiveAgentId(agent.id); setShowGraphView(false); }}
               onDoubleClick={() => startRenameTab(agent)}
               title="Double-click to rename"
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md cursor-pointer text-sm select-none transition-colors min-w-0 max-w-[10rem] shrink-0 ${
-                agent.id === activeAgentId
+                agent.id === activeAgentId && !showGraphView
                   ? 'bg-zinc-700 text-white'
                   : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
               }`}
             >
+              {agent.role === 'manager' && (
+                <Crown className="w-3 h-3 text-indigo-400 shrink-0" />
+              )}
               {editingTabId === agent.id ? (
                 <input
                   ref={tabInputRef}
@@ -383,7 +538,9 @@ export default function App() {
                 />
               ) : (
                 <>
-                  <Edit2 className="w-3 h-3 text-zinc-600 shrink-0" />
+                  {agent.role === 'worker' && (
+                    <Edit2 className="w-3 h-3 text-zinc-600 shrink-0" />
+                  )}
                   <span className="truncate">{agent.name}</span>
                 </>
               )}
@@ -412,6 +569,19 @@ export default function App() {
           Double-click tab to rename
         </span>
 
+        {/* Graph view toggle */}
+        <button
+          onClick={() => setShowGraphView(v => !v)}
+          title={showGraphView ? 'Back to chat' : 'View agent graph'}
+          className={`px-3 py-2 transition-colors shrink-0 ${
+            showGraphView
+              ? 'text-emerald-400 bg-emerald-500/10'
+              : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+          }`}
+        >
+          <Network className="w-4 h-4" />
+        </button>
+
         {/* Settings button */}
         <button
           onClick={handleOpenSettings}
@@ -422,7 +592,7 @@ export default function App() {
         </button>
       </div>
 
-      {/* ── Main content (sidebar + chat + right panel) ────────────────────── */}
+      {/* ── Main content ──────────────────────────────────────────────────── */}
       <div className="flex flex-1 min-h-0">
 
         {/* Sidebar */}
@@ -434,105 +604,129 @@ export default function App() {
             </h1>
           </div>
 
-          <div className="p-3 flex-1 overflow-y-auto">
-            <button
-              onClick={() => handleOpenFolder(activeAgent.id)}
-              className="w-full flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-xs font-medium py-2 px-3 rounded-lg transition-colors mb-3"
-            >
-              <FolderOpen className="w-3.5 h-3.5" />
-              {activeAgent.dirHandle ? 'Change Folder' : 'Open Folder'}
-            </button>
-
-            {activeAgent.dirHandle && (
-              <div>
-                <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2 truncate">
-                  {activeAgent.dirHandle.name}
-                </h2>
-                <ul className="space-y-1">
-                  {activeAgent.files.length === 0 ? (
-                    <li className="text-xs text-zinc-500 italic">Empty folder</li>
-                  ) : (
-                    activeAgent.files.map(f => (
-                      <li
-                        key={f}
-                        className="text-xs flex items-center gap-1.5 text-zinc-300 hover:text-white cursor-default"
-                      >
-                        <FileText className="w-3 h-3 text-zinc-500 shrink-0" />
-                        <span className="truncate">{f}</span>
-                      </li>
-                    ))
-                  )}
-                </ul>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Chat area */}
-        <div className="flex-1 flex flex-col min-w-0">
-
-          {/* Agent toolbar: model selector + web-search toggle */}
-          <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800 bg-zinc-900/50 shrink-0">
-            <span className="text-xs text-zinc-500 font-medium truncate max-w-[8rem]">
-              {activeAgent.name}
-            </span>
-
-            {/* Model picker */}
-            <div className="relative" ref={modelPickerRef}>
+          {showGraphView ? (
+            <div className="p-3 text-xs text-zinc-500 space-y-2">
+              <p className="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">
+                Agent Network
+              </p>
+              <p>{agents.length} agent{agents.length !== 1 ? 's' : ''}</p>
+              <p>{agents.filter(a => a.role === 'manager').length} manager{agents.filter(a => a.role === 'manager').length !== 1 ? 's' : ''}</p>
+              <p>{dedupedMessageLinks.filter(l => l.messageCount > 0).length} communication link{dedupedMessageLinks.filter(l => l.messageCount > 0).length !== 1 ? 's' : ''}</p>
+              <hr className="border-zinc-800 my-1" />
+              <p className="text-zinc-600">Click a node to open that agent's chat.</p>
+            </div>
+          ) : (
+            <div className="p-3 flex-1 overflow-y-auto">
               <button
-                onClick={() => setShowModelPicker(p => !p)}
-                className="flex items-center gap-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 px-2.5 py-1.5 rounded-md transition-colors"
+                onClick={() => handleOpenFolder(activeAgent.id)}
+                className="w-full flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-xs font-medium py-2 px-3 rounded-lg transition-colors mb-3"
               >
-                <span className="max-w-[8rem] truncate">{currentModelLabel}</span>
-                <ChevronDown className="w-3 h-3 text-zinc-400 shrink-0" />
+                <FolderOpen className="w-3.5 h-3.5" />
+                {activeAgent.dirHandle ? 'Change Folder' : 'Open Folder'}
               </button>
 
-              {showModelPicker && (
-                <div className="absolute top-9 left-0 z-50 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl w-60 max-h-80 overflow-y-auto">
-                  {/* Gemini models */}
-                  <div className="px-3 py-2 border-b border-zinc-700">
-                    <p className="text-xs text-zinc-400 font-semibold uppercase tracking-wider">
-                      Cloud Models
-                    </p>
-                  </div>
-                  {DEFAULT_GEMINI_MODELS.map(m => (
-                    <button
-                      key={m.id}
-                      onClick={() => {
-                        updateAgent(activeAgent.id, { modelId: m.id, provider: 'gemini' });
-                        setShowModelPicker(false);
-                      }}
-                      className={`w-full text-left px-3 py-2 text-sm hover:bg-zinc-700 transition-colors ${
-                        activeAgent.modelId === m.id ? 'text-emerald-400' : 'text-zinc-200'
-                      }`}
-                    >
-                      {m.name}
-                    </button>
-                  ))}
+              {activeAgent.dirHandle && (
+                <div>
+                  <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2 truncate">
+                    {activeAgent.dirHandle.name}
+                  </h2>
+                  <ul className="space-y-1">
+                    {activeAgent.files.length === 0 ? (
+                      <li className="text-xs text-zinc-500 italic">Empty folder</li>
+                    ) : (
+                      activeAgent.files.map(f => (
+                        <li
+                          key={f}
+                          className="text-xs flex items-center gap-1.5 text-zinc-300 hover:text-white cursor-default"
+                        >
+                          <FileText className="w-3 h-3 text-zinc-500 shrink-0" />
+                          <span className="truncate">{f}</span>
+                        </li>
+                      ))
+                    )}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
-                  {/* Ollama models */}
-                  <div className="px-3 py-2 border-t border-b border-zinc-700 flex items-center justify-between">
-                    <p className="text-xs text-zinc-400 font-semibold uppercase tracking-wider">
-                      Local (Ollama)
-                    </p>
-                    <button
-                      onClick={handleOpenDownloadModal}
-                      className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
-                    >
-                      <Download className="w-3 h-3" /> Get models
-                    </button>
-                  </div>
+        {/* ── Graph View ─────────────────────────────────────────────────── */}
+        {showGraphView ? (
+          <AgentGraph
+            agents={agents.map(a => ({
+              id: a.id,
+              name: a.name,
+              role: a.role,
+              provider: a.provider,
+              modelId: a.modelId,
+              parentId: a.parentId,
+              isLoading: a.isLoading,
+            }))}
+            activeAgentId={activeAgentId}
+            messageLinks={dedupedMessageLinks}
+            onSelectAgent={id => {
+              setActiveAgentId(id);
+              setShowGraphView(false);
+            }}
+          />
+        ) : (
+          /* ── Chat View ───────────────────────────────────────────────── */
+          <div className="flex-1 flex flex-col min-w-0">
 
-                  {ollamaModels.length === 0 ? (
-                    <p className="px-3 py-2 text-xs text-zinc-500 italic">
-                      No local models found. Start Ollama and download a model.
-                    </p>
-                  ) : (
-                    ollamaModels.map(m => (
+            {/* Agent toolbar */}
+            <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800 bg-zinc-900/50 shrink-0">
+              <span className="text-xs text-zinc-500 font-medium truncate max-w-[8rem] flex items-center gap-1">
+                {activeAgent.role === 'manager' && (
+                  <Crown className="w-3 h-3 text-indigo-400 shrink-0" />
+                )}
+                {activeAgent.name}
+              </span>
+
+              {/* Manager / Worker role toggle */}
+              <button
+                onClick={() =>
+                  updateAgent(activeAgent.id, {
+                    role: activeAgent.role === 'manager' ? 'worker' : 'manager',
+                  })
+                }
+                title={
+                  activeAgent.role === 'manager'
+                    ? 'Manager mode — click to make worker'
+                    : 'Worker mode — click to promote to manager'
+                }
+                className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors ${
+                  activeAgent.role === 'manager'
+                    ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
+                    : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'
+                }`}
+              >
+                <Crown className="w-3 h-3" />
+                {activeAgent.role === 'manager' ? 'Manager' : 'Worker'}
+              </button>
+
+              {/* Model picker */}
+              <div className="relative" ref={modelPickerRef}>
+                <button
+                  onClick={() => setShowModelPicker(p => !p)}
+                  className="flex items-center gap-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 px-2.5 py-1.5 rounded-md transition-colors"
+                >
+                  <span className="max-w-[8rem] truncate">{currentModelLabel}</span>
+                  <ChevronDown className="w-3 h-3 text-zinc-400 shrink-0" />
+                </button>
+
+                {showModelPicker && (
+                  <div className="absolute top-9 left-0 z-50 bg-zinc-800 border border-zinc-700 rounded-lg shadow-xl w-60 max-h-80 overflow-y-auto">
+                    <div className="px-3 py-2 border-b border-zinc-700">
+                      <p className="text-xs text-zinc-400 font-semibold uppercase tracking-wider">
+                        Cloud Models
+                      </p>
+                    </div>
+                    {DEFAULT_GEMINI_MODELS.map(m => (
                       <button
                         key={m.id}
                         onClick={() => {
-                          updateAgent(activeAgent.id, { modelId: m.id, provider: 'ollama' });
+                          updateAgent(activeAgent.id, { modelId: m.id, provider: 'gemini' });
                           setShowModelPicker(false);
                         }}
                         className={`w-full text-left px-3 py-2 text-sm hover:bg-zinc-700 transition-colors ${
@@ -541,102 +735,139 @@ export default function App() {
                       >
                         {m.name}
                       </button>
-                    ))
-                  )}
-                </div>
-              )}
-            </div>
+                    ))}
 
-            {/* Web-search toggle */}
-            <button
-              onClick={() =>
-                updateAgent(activeAgent.id, { enableWebSearch: !activeAgent.enableWebSearch })
-              }
-              title={
-                activeAgent.enableWebSearch ? 'Web search enabled (click to disable)' : 'Enable web search'
-              }
-              className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors ${
-                activeAgent.enableWebSearch
-                  ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30'
-                  : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'
-              }`}
-            >
-              <Globe className="w-3.5 h-3.5" />
-              Web
-            </button>
-          </div>
-
-          {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-5">
-            {activeAgent.messages.map((msg, i) => (
-              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div
-                  className={`max-w-3xl rounded-2xl px-4 py-3 ${
-                    msg.role === 'user'
-                      ? 'bg-emerald-600/20 text-emerald-50 border border-emerald-500/20'
-                      : msg.role === 'system'
-                      ? 'bg-zinc-800/50 text-zinc-400 text-sm border border-zinc-700/50'
-                      : 'bg-zinc-900 border border-zinc-800 text-zinc-200'
-                  }`}
-                >
-                  {msg.role === 'system' ? (
-                    <div className="flex items-center gap-2">
-                      <AlertCircle className="w-4 h-4 shrink-0" />
-                      {msg.content}
+                    <div className="px-3 py-2 border-t border-b border-zinc-700 flex items-center justify-between">
+                      <p className="text-xs text-zinc-400 font-semibold uppercase tracking-wider">
+                        Local (Ollama)
+                      </p>
+                      <button
+                        onClick={handleOpenDownloadModal}
+                        className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
+                      >
+                        <Download className="w-3 h-3" /> Get models
+                      </button>
                     </div>
-                  ) : (
-                    <div className="prose prose-invert prose-sm max-w-none">
-                      <Markdown>{msg.content}</Markdown>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
 
-            {activeAgent.isLoading && (
-              <div className="flex justify-start">
-                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl px-4 py-3 text-zinc-400 text-sm animate-pulse">
-                  Thinking…
-                </div>
+                    {ollamaModels.length === 0 ? (
+                      <p className="px-3 py-2 text-xs text-zinc-500 italic">
+                        No local models found. Start Ollama and download a model.
+                      </p>
+                    ) : (
+                      ollamaModels.map(m => (
+                        <button
+                          key={m.id}
+                          onClick={() => {
+                            updateAgent(activeAgent.id, { modelId: m.id, provider: 'ollama' });
+                            setShowModelPicker(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 text-sm hover:bg-zinc-700 transition-colors ${
+                            activeAgent.modelId === m.id ? 'text-emerald-400' : 'text-zinc-200'
+                          }`}
+                        >
+                          {m.name}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
               </div>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
 
-          {/* Input */}
-          <div className="p-4 border-t border-zinc-800 bg-zinc-950">
-            <div className="max-w-4xl mx-auto relative">
-              <textarea
-                value={activeAgent.input}
-                onChange={e => updateAgent(activeAgent.id, { input: e.target.value })}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSendMessage(activeAgent.id);
-                  }
-                }}
-                placeholder={
-                  activeAgent.dirHandle
-                    ? `Ask ${activeAgent.name} to create a file, search the web, write a script…`
-                    : 'Please open a folder first…'
-                }
-                disabled={!activeAgent.dirHandle || activeAgent.isLoading}
-                className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-4 pr-12 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 disabled:opacity-50 resize-none"
-                rows={1}
-              />
+              {/* Web-search toggle */}
               <button
-                onClick={() => handleSendMessage(activeAgent.id)}
-                disabled={!activeAgent.input.trim() || !activeAgent.dirHandle || activeAgent.isLoading}
-                className="absolute right-2 top-2 p-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 rounded-lg disabled:opacity-50 transition-colors"
+                onClick={() =>
+                  updateAgent(activeAgent.id, { enableWebSearch: !activeAgent.enableWebSearch })
+                }
+                title={
+                  activeAgent.enableWebSearch
+                    ? 'Web search enabled (click to disable)'
+                    : 'Enable web search'
+                }
+                className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors ${
+                  activeAgent.enableWebSearch
+                    ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30'
+                    : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'
+                }`}
               >
-                <Send className="w-4 h-4" />
+                <Globe className="w-3.5 h-3.5" />
+                Web
               </button>
             </div>
-          </div>
-        </div>
 
-        {/* Right panel: script review + terminal */}
-        {(activeAgent.proposedScript || activeAgent.terminalLogs.length > 0) && (
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-5">
+              {activeAgent.messages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div
+                    className={`max-w-3xl rounded-2xl px-4 py-3 ${
+                      msg.role === 'user'
+                        ? 'bg-emerald-600/20 text-emerald-50 border border-emerald-500/20'
+                        : msg.role === 'system'
+                        ? 'bg-zinc-800/50 text-zinc-400 text-sm border border-zinc-700/50'
+                        : 'bg-zinc-900 border border-zinc-800 text-zinc-200'
+                    }`}
+                  >
+                    {msg.role === 'system' ? (
+                      <div className="flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        {msg.content}
+                      </div>
+                    ) : (
+                      <div className="prose prose-invert prose-sm max-w-none">
+                        <Markdown>{msg.content}</Markdown>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+
+              {activeAgent.isLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-2xl px-4 py-3 text-zinc-400 text-sm animate-pulse">
+                    Thinking…
+                  </div>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Input */}
+            <div className="p-4 border-t border-zinc-800 bg-zinc-950">
+              <div className="max-w-4xl mx-auto relative">
+                <textarea
+                  value={activeAgent.input}
+                  onChange={e => updateAgent(activeAgent.id, { input: e.target.value })}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendMessage(activeAgent.id);
+                    }
+                  }}
+                  placeholder={
+                    activeAgent.dirHandle
+                      ? activeAgent.role === 'manager'
+                        ? `${activeAgent.name} can spawn workers and delegate tasks…`
+                        : `Ask ${activeAgent.name} to create a file, search the web, write a script…`
+                      : 'Please open a folder first…'
+                  }
+                  disabled={!activeAgent.dirHandle || activeAgent.isLoading}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-4 pr-12 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 disabled:opacity-50 resize-none"
+                  rows={1}
+                />
+                <button
+                  onClick={() => handleSendMessage(activeAgent.id)}
+                  disabled={!activeAgent.input.trim() || !activeAgent.dirHandle || activeAgent.isLoading}
+                  className="absolute right-2 top-2 p-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 rounded-lg disabled:opacity-50 transition-colors"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Right panel: script review + terminal (chat view only) */}
+        {!showGraphView && (activeAgent.proposedScript || activeAgent.terminalLogs.length > 0) && (
           <div className="w-[22rem] bg-zinc-900 border-l border-zinc-800 flex flex-col shrink-0">
             {activeAgent.proposedScript && (
               <div className="flex-1 flex flex-col border-b border-zinc-800 min-h-0">
@@ -691,22 +922,14 @@ export default function App() {
           <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-base font-semibold">Download Local Model (Ollama)</h2>
-              <button
-                onClick={handleCloseDownloadModal}
-                className="text-zinc-400 hover:text-white"
-              >
+              <button onClick={handleCloseDownloadModal} className="text-zinc-400 hover:text-white">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             <p className="text-xs text-zinc-400 mb-4">
               Requires{' '}
-              <a
-                href="https://ollama.com"
-                target="_blank"
-                rel="noreferrer"
-                className="text-emerald-400 hover:underline"
-              >
+              <a href="https://ollama.com" target="_blank" rel="noreferrer" className="text-emerald-400 hover:underline">
                 Ollama
               </a>{' '}
               to be running locally or inside Docker. Models are stored in the Ollama volume.
@@ -754,10 +977,7 @@ export default function App() {
                 <Settings className="w-4 h-4 text-emerald-400" />
                 Ollama Settings
               </h2>
-              <button
-                onClick={() => setShowSettings(false)}
-                className="text-zinc-400 hover:text-white"
-              >
+              <button onClick={() => setShowSettings(false)} className="text-zinc-400 hover:text-white">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -768,9 +988,7 @@ export default function App() {
               provided <code className="text-emerald-400">docker-compose.yml</code>.
             </p>
 
-            <label className="block text-xs font-medium text-zinc-400 mb-1">
-              Ollama URL
-            </label>
+            <label className="block text-xs font-medium text-zinc-400 mb-1">Ollama URL</label>
             <div className="flex gap-2 mb-3">
               <input
                 type="url"

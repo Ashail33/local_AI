@@ -59,6 +59,37 @@ const webSearchTool: FunctionDeclaration = {
   },
 };
 
+/** Tools only available to manager agents. */
+const managerToolDeclarations: FunctionDeclaration[] = [
+  {
+    name: 'spawn_agent',
+    description:
+      'Create a new worker agent and give it a name and an initial task. ' +
+      'Returns the new agent\'s ID so you can later message it with message_agent.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING, description: 'A short, descriptive name for the new worker agent.' },
+        task: { type: Type.STRING, description: 'The initial task or instruction for the worker agent.' },
+      },
+      required: ['name', 'task'],
+    },
+  },
+  {
+    name: 'message_agent',
+    description:
+      'Send a message or sub-task to one of your worker agents and receive their response.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        agentId: { type: Type.STRING, description: 'The ID of the worker agent to message.' },
+        message: { type: Type.STRING, description: 'The message or task to send to the worker.' },
+      },
+      required: ['agentId', 'message'],
+    },
+  },
+];
+
 // ── Ollama helper ─────────────────────────────────────────────────────────────
 
 async function ollamaChat(
@@ -90,15 +121,34 @@ async function ollamaChat(
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
+/** A lightweight reference to an agent used in tool callbacks. */
+export interface AgentRef {
+  id: string;
+  name: string;
+}
+
 export interface ProcessChatOptions {
   /** Full model identifier, e.g. "gemini-3.1-pro-preview" or "llama3.2". */
   modelId?: string;
   provider?: ModelProvider;
   enableWebSearch?: boolean;
   agentName?: string;
+  /** When true the agent receives spawn_agent + message_agent tools (Gemini only). */
+  isManager?: boolean;
+  /** Worker agents this manager has already spawned – included in the system prompt. */
+  spawnedAgents?: AgentRef[];
+  /** Called when the manager invokes spawn_agent. Returns the new agent's ref. */
+  onSpawnAgent?: (name: string, task: string) => Promise<AgentRef>;
+  /** Called when the manager invokes message_agent. Returns the worker's reply. */
+  onMessageAgent?: (agentId: string, message: string) => Promise<string>;
 }
 
-function buildSystemInstruction(agentName: string, enableWebSearch: boolean): string {
+function buildSystemInstruction(
+  agentName: string,
+  enableWebSearch: boolean,
+  isManager: boolean = false,
+  spawnedAgents: AgentRef[] = [],
+): string {
   const lines = [
     `You are ${agentName}, a powerful Local AI Assistant.`,
     "You have access to a local folder on the user's computer.",
@@ -111,9 +161,27 @@ function buildSystemInstruction(agentName: string, enableWebSearch: boolean): st
     'Use `content = await read_file("file.txt")` and `await write_file("file.txt", content)`',
     'in scripts for workspace file access.',
   ];
+
   if (enableWebSearch) {
     lines.push("You can search the internet for current information using the 'web_search' tool.");
   }
+
+  if (isManager) {
+    lines.push(
+      'You are a MANAGER AGENT. You can break complex tasks down and delegate them to worker agents.',
+      "Use 'spawn_agent' to create a new worker agent, giving it a name and an initial task description.",
+      "Use 'message_agent' to send instructions to a worker agent and receive its response.",
+      'Synthesise the workers\' responses and provide a final answer to the user.',
+    );
+    if (spawnedAgents.length > 0) {
+      lines.push(
+        `Your worker agents: ${spawnedAgents.map(a => `${a.name} (ID: ${a.id})`).join(', ')}.`,
+      );
+    } else {
+      lines.push('You have no worker agents yet. Use spawn_agent to create them when needed.');
+    }
+  }
+
   return lines.join(' ');
 }
 
@@ -130,9 +198,13 @@ export async function processChatTurn(
     provider = 'gemini',
     enableWebSearch = false,
     agentName = 'AI Assistant',
+    isManager = false,
+    spawnedAgents = [],
+    onSpawnAgent,
+    onMessageAgent,
   } = options;
 
-  const systemInstruction = buildSystemInstruction(agentName, enableWebSearch);
+  const systemInstruction = buildSystemInstruction(agentName, enableWebSearch, isManager, spawnedAgents);
 
   // ── Ollama path (straightforward chat, no tool calling) ───────────────────
   if (provider === 'ollama') {
@@ -147,9 +219,11 @@ export async function processChatTurn(
   }
 
   // ── Gemini path (with tool calling) ──────────────────────────────────────
-  const tools = enableWebSearch
-    ? [...baseToolDeclarations, webSearchTool]
-    : [...baseToolDeclarations];
+  const tools = [
+    ...baseToolDeclarations,
+    ...(enableWebSearch ? [webSearchTool] : []),
+    ...(isManager ? managerToolDeclarations : []),
+  ];
 
   const chat = ai.chats.create({
     model: modelId,
@@ -214,6 +288,40 @@ export async function processChatTurn(
         });
       } catch (e: any) {
         response = await chat.sendMessage({ message: `Web search failed: ${e.message}` });
+      }
+    } else if (call.name === 'spawn_agent') {
+      if (!onSpawnAgent) {
+        response = await chat.sendMessage({ message: 'spawn_agent is not available in this context.' });
+      } else {
+        try {
+          onLog(`Manager spawning agent: ${call.args.name}`);
+          const newAgent = await onSpawnAgent(
+            call.args.name as string,
+            call.args.task as string,
+          );
+          response = await chat.sendMessage({
+            message: `spawn_agent succeeded. New agent "${newAgent.name}" created with ID: ${newAgent.id}. Use message_agent with this ID to communicate with it.`,
+          });
+        } catch (e: any) {
+          response = await chat.sendMessage({ message: `spawn_agent failed: ${e.message}` });
+        }
+      }
+    } else if (call.name === 'message_agent') {
+      if (!onMessageAgent) {
+        response = await chat.sendMessage({ message: 'message_agent is not available in this context.' });
+      } else {
+        try {
+          onLog(`Manager messaging agent ID: ${call.args.agentId}`);
+          const reply = await onMessageAgent(
+            call.args.agentId as string,
+            call.args.message as string,
+          );
+          response = await chat.sendMessage({
+            message: `message_agent response from agent ${call.args.agentId}: ${reply}`,
+          });
+        } catch (e: any) {
+          response = await chat.sendMessage({ message: `message_agent failed: ${e.message}` });
+        }
       }
     } else {
       // Unknown tool – break to avoid infinite loop
