@@ -22,9 +22,38 @@ async function getOrCreateDir(
   return dir;
 }
 
+/**
+ * Sanitise a file path so it is always relative to the workspace root.
+ * Strips drive letters, absolute-path prefixes, common OS folder prefixes
+ * (e.g. Users/…/Desktop), and any ".." traversal segments.
+ */
+function sanitizePath(filePath: string): string {
+  // Normalise backslashes to forward slashes
+  let cleaned = filePath.replace(/\\/g, '/');
+
+  // Strip Windows drive letters (e.g. "C:/Users/…" → "Users/…")
+  cleaned = cleaned.replace(/^[A-Za-z]:\/?/, '');
+
+  // Strip leading slashes (absolute Unix paths)
+  cleaned = cleaned.replace(/^\/+/, '');
+
+  // Strip common absolute OS folder prefixes so the AI cannot accidentally
+  // target the user's Desktop, Documents, Downloads, etc.
+  cleaned = cleaned.replace(
+    /^(?:Users|home)\/[^/]+\/(?:Desktop|Documents|Downloads|OneDrive)\//i,
+    '',
+  );
+
+  // Remove "." and ".." segments to prevent directory traversal
+  const parts = cleaned.split('/').filter(p => p && p !== '..' && p !== '.');
+
+  return parts.join('/');
+}
+
 /** Split a file path into { dirParts, filename }. Throws on empty or invalid paths. */
 function splitPath(filePath: string): { dirParts: string[]; filename: string } {
-  const parts = filePath.split('/').filter(Boolean);
+  const safe = sanitizePath(filePath);
+  const parts = safe.split('/').filter(Boolean);
   if (parts.length === 0) throw new Error(`Invalid file path: "${filePath}". Path must not be empty.`);
   const filename = parts.pop()!;
   return { dirParts: parts, filename };
@@ -38,7 +67,8 @@ export async function createFolder(
   dirHandle: FileSystemDirectoryHandle,
   folderPath: string,
 ): Promise<void> {
-  const parts = folderPath.split('/').filter(Boolean);
+  const safe = sanitizePath(folderPath);
+  const parts = safe.split('/').filter(Boolean);
   if (parts.length === 0) throw new Error('Folder path must not be empty.');
   await getOrCreateDir(dirHandle, parts);
 }
