@@ -114,6 +114,15 @@ export default function App() {
   const [pyodideInstance, setPyodideInstance] = useState<any>(null);
   /** Communication links recorded during manager ↔ worker interactions. */
   const [messageLinks, setMessageLinks] = useState<MessageLink[]>([]);
+  /**
+   * Authorized communication channels set up by managers via connect_agents or by drawing
+   * links in the graph. Only agents with an authorized link can use handoff_to_agent to
+   * communicate with each other.
+   */
+  const [connectedLinks, setConnectedLinks] = useState<{ fromId: string; toId: string }[]>([]);
+  /** Always-current reference to connectedLinks for use in async callbacks. */
+  const connectedLinksRef = useRef<{ fromId: string; toId: string }[]>([]);
+  useEffect(() => { connectedLinksRef.current = connectedLinks; }, [connectedLinks]);
   /** Toggle between the chat view and the agent-topology graph view. */
   const [showGraphView, setShowGraphView] = useState(false);
   /** System prompt editor modal state. */
@@ -229,8 +238,9 @@ export default function App() {
       }
       return filtered;
     });
-    // Remove message links involving this agent
+    // Remove message links and authorized connections involving this agent
     setMessageLinks(prev => prev.filter(l => l.fromId !== id && l.toId !== id));
+    setConnectedLinks(prev => prev.filter(l => l.fromId !== id && l.toId !== id));
   };
 
   const startRenameTab = (agent: Agent) => {
@@ -266,6 +276,12 @@ export default function App() {
       const exists = prev.some(l => l.fromId === fromId && l.toId === toId);
       if (exists) return prev;
       return [...prev, { fromId, toId, messageCount: 0, lastMessage: '' }];
+    });
+    // A user-drawn graph link also authorizes communication in that direction
+    setConnectedLinks(prev => {
+      const exists = prev.some(l => l.fromId === fromId && l.toId === toId);
+      if (exists) return prev;
+      return [...prev, { fromId, toId }];
     });
   };
 
@@ -519,10 +535,14 @@ export default function App() {
           ),
         );
 
-      // Agents available to the target for further handoff (everyone except the target itself)
-      const targetHandoffAgents: AgentRef[] = agentsRef.current
-        .filter(a => a.id !== targetId)
-        .map(a => ({ id: a.id, name: a.name }));
+      // Agents available to the target for further handoff — restricted to authorized connections.
+      const targetHandoffAgents: AgentRef[] = target.role !== 'manager'
+        ? connectedLinksRef.current
+            .filter(l => l.fromId === targetId)
+            .map(l => agentsRef.current.find(a => a.id === l.toId))
+            .filter((a): a is Agent => Boolean(a))
+            .map(a => ({ id: a.id, name: a.name }))
+        : [];
 
       let reply = '';
       try {
@@ -548,13 +568,15 @@ export default function App() {
               target.role === 'manager'
                 ? buildMessageAgentCallback(targetId, target.name)
                 : undefined,
+            onListAgents: target.role === 'manager' ? buildListAgentsCallback(targetId) : undefined,
+            onConnectAgents: target.role === 'manager' ? buildConnectAgentsCallback(targetId) : undefined,
             onRequestSignoff:
               target.role === 'manager' && target.recursive
                 ? buildRequestSignoffCallback(targetId)
                 : undefined,
-            handoffAgents: target.role !== 'manager' ? targetHandoffAgents : [],
+            handoffAgents: targetHandoffAgents,
             onHandoffToAgent:
-              target.role !== 'manager'
+              target.role !== 'manager' && targetHandoffAgents.length > 0
                 ? buildHandoffAgentCallback(targetId, target.name)
                 : undefined,
           },
@@ -611,6 +633,48 @@ export default function App() {
       return reply;
     };
 
+  // ── Manager-specific callbacks ──────────────────────────────────────────────
+
+  /**
+   * Returns all agents (except the calling manager) so the manager can discover
+   * which agents are available to delegate to or connect.
+   */
+  const buildListAgentsCallback = (managerId: string) =>
+    async (): Promise<AgentRef[]> =>
+      agentsRef.current
+        .filter(a => a.id !== managerId)
+        .map(a => ({ id: a.id, name: a.name, role: a.role }));
+
+  /**
+   * Called when a manager agent uses the connect_agents tool.
+   * Creates an authorized one-way communication channel fromAgentId → toAgentId
+   * and records the visual link in the graph.
+   */
+  const buildConnectAgentsCallback = (managerId: string) =>
+    async (fromAgentId: string, toAgentId: string): Promise<string> => {
+      const fromAgent = agentsRef.current.find(a => a.id === fromAgentId);
+      const toAgent = agentsRef.current.find(a => a.id === toAgentId);
+      const managerAgent = agentsRef.current.find(a => a.id === managerId);
+      if (!fromAgent) return `Error: Agent with ID "${fromAgentId}" not found.`;
+      if (!toAgent) return `Error: Agent with ID "${toAgentId}" not found.`;
+
+      setConnectedLinks(prev => {
+        const exists = prev.some(l => l.fromId === fromAgentId && l.toId === toAgentId);
+        if (exists) return prev;
+        return [...prev, { fromId: fromAgentId, toId: toAgentId }];
+      });
+
+      // Also add a visual edge to the graph (with 0 message count until they actually talk)
+      const linkNote = `Connected by ${managerAgent?.name ?? 'manager'}`;
+      setMessageLinks(prev => {
+        const exists = prev.some(l => l.fromId === fromAgentId && l.toId === toAgentId);
+        if (exists) return prev;
+        return [...prev, { fromId: fromAgentId, toId: toAgentId, messageCount: 0, lastMessage: linkNote }];
+      });
+
+      return `Connected: ${fromAgent.name} → ${toAgent.name}. ${fromAgent.name} can now hand off work to ${toAgent.name} using handoff_to_agent.`;
+    };
+
   // ── Chat ────────────────────────────────────────────────────────────────────
 
   const handleSendMessage = async (agentId: string) => {
@@ -637,10 +701,15 @@ export default function App() {
       .filter(a => a.parentId === agentId)
       .map(a => ({ id: a.id, name: a.name }));
 
-    // Agents available for handoff (all agents except the current one)
-    const handoffAgents: AgentRef[] = agentsRef.current
-      .filter(a => a.id !== agentId)
-      .map(a => ({ id: a.id, name: a.name }));
+    // Agents available for handoff: restricted to authorized connections set up by a manager.
+    // Only non-manager agents use handoff; managers use message_agent instead.
+    const handoffAgents: AgentRef[] = agent.role !== 'manager'
+      ? connectedLinksRef.current
+          .filter(l => l.fromId === agentId)
+          .map(l => agentsRef.current.find(a => a.id === l.toId))
+          .filter((a): a is Agent => Boolean(a))
+          .map(a => ({ id: a.id, name: a.name }))
+      : [];
 
     try {
       const responseMsg = await processChatTurn(
@@ -663,13 +732,15 @@ export default function App() {
             agent.role === 'manager'
               ? buildMessageAgentCallback(agentId, agent.name)
               : undefined,
+          onListAgents: agent.role === 'manager' ? buildListAgentsCallback(agentId) : undefined,
+          onConnectAgents: agent.role === 'manager' ? buildConnectAgentsCallback(agentId) : undefined,
           onRequestSignoff:
             agent.role === 'manager' && agent.recursive
               ? buildRequestSignoffCallback(agentId)
               : undefined,
-          handoffAgents: agent.role !== 'manager' ? handoffAgents : [],
+          handoffAgents,
           onHandoffToAgent:
-            agent.role !== 'manager'
+            agent.role !== 'manager' && handoffAgents.length > 0
               ? buildHandoffAgentCallback(agentId, agent.name)
               : undefined,
         },
