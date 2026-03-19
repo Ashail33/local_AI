@@ -93,3 +93,31 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - **Error Handling**: Includes robust error handling for asynchronous operations, providing meaningful feedback to users when operations fail (e.g., during handoff or document creation).
 
 - **Future Considerations**: Developers should be aware of the new tool declarations and their parameters in `ai.ts`, as well as the implications of the handoff mechanism on agent workflows. Understanding the flow of messages and state updates will be crucial for maintaining and extending this functionality.
+
+---
+
+## 2026-03-19 16:49:49 UTC — `662596b`
+> Add list_agents/connect_agents tools to manager; restrict worker handoff to authorized channels (#13)
+
+* Initial plan
+
+* Add list_agents/connect_agents tools to manager and restrict worker handoff to authorized channels
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+---------
+
+Co-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **Files Changed**: The primary changes were made in `src/App.tsx` and `src/lib/ai.ts`. The `App.tsx` file was updated to manage new communication tools, while `ai.ts` introduced new tool declarations for agent management.
+
+- **New Features**: Added `list_agents` and `connect_agents` tools for manager agents. The `list_agents` tool allows managers to retrieve a list of available agents, while `connect_agents` establishes a one-way communication link between agents for task handoff.
+
+- **Authorization Logic**: Implemented a mechanism to restrict agent handoff to only those agents connected through authorized channels, enhancing security and control over agent interactions.
+
+- **State Management**: Introduced `connectedLinks` state in `App.tsx` to track authorized communication channels, along with a reference (`connectedLinksRef`) for asynchronous callbacks.
+
+- **Design Patterns**: Utilized functional programming patterns for managing state updates and ensuring immutability when adding or removing connections in the `connectedLinks` and `messageLinks` states.
+
+- **Future Considerations**: Developers should be aware of the new authorization model when implementing agent interactions. Ensure that any new features involving agent communication respect the established connection rules to maintain system integrity.
