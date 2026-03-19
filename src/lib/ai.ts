@@ -9,7 +9,96 @@ function getAiClient(): GoogleGenAI {
   return new GoogleGenAI({ apiKey: getGeminiApiKey() });
 }
 
+/** Generate a Python script that creates a Word (.docx) document via python-docx. */
+function buildDocxScript(filename: string, content: string): string {
+  const b64 = btoa(unescape(encodeURIComponent(content)));
+  return `await micropip.install("python-docx")
+from docx import Document
+import io, base64
+
+content = base64.b64decode("${b64}").decode("utf-8")
+doc = Document()
+for line in content.split("\\n"):
+    doc.add_paragraph(line)
+
+buf = io.BytesIO()
+doc.save(buf)
+await write_binary_file("${filename}", buf.getvalue())
+`;
+}
+
+/** Generate a Python script that creates a PDF document via reportlab. */
+function buildPdfScript(filename: string, content: string): string {
+  const b64 = btoa(unescape(encodeURIComponent(content)));
+  return `await micropip.install("reportlab")
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+import io, base64
+
+content = base64.b64decode("${b64}").decode("utf-8")
+buf = io.BytesIO()
+doc = SimpleDocTemplate(buf, pagesize=A4)
+styles = getSampleStyleSheet()
+story = []
+for line in content.split("\\n"):
+    if line.strip():
+        story.append(Paragraph(line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), styles["Normal"]))
+    else:
+        story.append(Spacer(1, 12))
+doc.build(story)
+await write_binary_file("${filename}", buf.getvalue())
+`;
+}
+
 // ── Tool declarations ─────────────────────────────────────────────────────────
+
+const createFolderTool: FunctionDeclaration = {
+  name: 'create_folder',
+  description:
+    'Create a subfolder (or nested subfolder path) inside the workspace. ' +
+    'Use this to organise outputs into directories before writing files. ' +
+    'Supports nested paths, e.g. "reports/2024/q1".',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      folder_path: {
+        type: Type.STRING,
+        description: 'Folder path relative to workspace root (e.g., "reports" or "reports/2024").',
+      },
+    },
+    required: ['folder_path'],
+  },
+};
+
+const writeDocumentTool: FunctionDeclaration = {
+  name: 'write_document',
+  description:
+    'Write a document to the workspace in the specified format. ' +
+    'Supports plain text (.txt), Microsoft Word (.docx), and PDF (.pdf). ' +
+    'Subfolder paths are supported (e.g., "reports/summary.docx"). ' +
+    'Intermediate folders are created automatically.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      filename: {
+        type: Type.STRING,
+        description:
+          'Filename with extension, optionally with a subfolder path ' +
+          '(e.g., "report.txt", "docs/summary.docx", "output/results.pdf").',
+      },
+      content: {
+        type: Type.STRING,
+        description: 'The document content. Plain text or Markdown is accepted for all formats.',
+      },
+      format: {
+        type: Type.STRING,
+        description: 'Document format: "txt" | "docx" | "pdf".',
+      },
+    },
+    required: ['filename', 'content', 'format'],
+  },
+};
 
 const baseToolDeclarations: FunctionDeclaration[] = [
   {
@@ -100,6 +189,8 @@ const baseToolDeclarations: FunctionDeclaration[] = [
       required: ['script', 'explanation'],
     },
   },
+  createFolderTool,
+  writeDocumentTool,
 ];
 
 /**
@@ -111,6 +202,7 @@ const baseToolDeclarations: FunctionDeclaration[] = [
 const managerBaseToolDeclarations: FunctionDeclaration[] = [
   baseToolDeclarations[0], // read_file
   baseToolDeclarations[2], // create_document (for final summaries / reports only)
+  createFolderTool,        // managers can set up folder structure
 ];
 
 const webSearchTool: FunctionDeclaration = {
@@ -298,6 +390,12 @@ export interface ProcessChatOptions {
   handoffAgents?: AgentRef[];
   /** Called when the agent invokes handoff_to_agent. Returns the target agent's reply. */
   onHandoffToAgent?: (agentId: string, message: string) => Promise<string>;
+  /**
+   * Called when an agent invokes write_document for docx/pdf formats.
+   * Executes a Python script automatically (without user review).
+   * Returns a result string.
+   */
+  onAutoRunScript?: (script: string) => Promise<string>;
 }
 
 function buildSystemInstruction(
@@ -329,6 +427,8 @@ function buildSystemInstruction(
       '  • NEVER use write_file, build_tool, or propose_python_script — you do not have these tools.',
       '  • ALWAYS delegate implementation, data processing, file writing, and computation to worker agents.',
       '  • Keep your own responses to coordination decisions, task breakdowns, and final summaries only.',
+      '  • Format your final response with clear Markdown sections (## headings, bullet lists). Never paste raw code blocks or script output from workers — describe results in your own words.',
+      '  • When presenting results: open with a brief executive summary, then list what each worker produced, then give your synthesis and recommendations.',
     );
     if (spawnedAgents.length > 0) {
       lines.push(
@@ -354,6 +454,9 @@ function buildSystemInstruction(
       '(e.g. `await micropip.install("openpyxl")`).',
       'Use `content = await read_file("file.txt")` and `await write_file("file.txt", content)`',
       'in scripts for workspace file access.',
+      'Use \'write_document\' to write .txt, .docx (Word), or .pdf files to the workspace.',
+      'Use \'create_folder\' to create subfolders (e.g., "reports/2024") before writing files into them.',
+      'File paths support subfolders: write to "reports/summary.txt" instead of just "summary.txt".',
     );
   }
 
@@ -409,6 +512,7 @@ export async function processChatTurn(
     onRequestSignoff,
     handoffAgents = [],
     onHandoffToAgent,
+    onAutoRunScript,
   } = options;
 
   const systemInstruction = buildSystemInstruction(
@@ -516,6 +620,66 @@ export async function processChatTurn(
         });
       } catch (e: any) {
         response = await chat.sendMessage({ message: `Tool build_tool failed: ${e.message}` });
+      }
+    } else if (call.name === 'create_folder') {
+      if (!dirHandle) throw new Error('No directory selected.');
+      try {
+        const { createFolder } = await import('./fs');
+        await createFolder(dirHandle, call.args.folder_path as string);
+        onLog(`Folder created: ${call.args.folder_path}`);
+        response = await chat.sendMessage({
+          message: `Tool create_folder succeeded. Folder "${call.args.folder_path}" is ready.`,
+        });
+      } catch (e: any) {
+        response = await chat.sendMessage({ message: `Tool create_folder failed: ${e.message}` });
+      }
+    } else if (call.name === 'write_document') {
+      if (!dirHandle) throw new Error('No directory selected.');
+      const fmt = ((call.args.format as string) ?? 'txt').toLowerCase();
+      const filename = call.args.filename as string;
+      const content = call.args.content as string;
+      try {
+        if (fmt === 'txt') {
+          await writeFile(dirHandle, filename, content);
+          onLog(`Document written: ${filename} (txt)`);
+          response = await chat.sendMessage({
+            message: `Tool write_document succeeded. Text document saved as "${filename}".`,
+          });
+        } else if (fmt === 'docx') {
+          const script = buildDocxScript(filename, content);
+          if (onAutoRunScript) {
+            const result = await onAutoRunScript(script);
+            onLog(`Document written: ${filename} (docx)`);
+            response = await chat.sendMessage({
+              message: `Tool write_document succeeded. Word document saved as "${filename}". ${result}`,
+            });
+          } else {
+            onProposeScript(script, `Create Word document: ${filename}`);
+            response = await chat.sendMessage({
+              message: `Tool write_document: Python script proposed to create Word document "${filename}". The user must run it.`,
+            });
+          }
+        } else if (fmt === 'pdf') {
+          const script = buildPdfScript(filename, content);
+          if (onAutoRunScript) {
+            const result = await onAutoRunScript(script);
+            onLog(`Document written: ${filename} (pdf)`);
+            response = await chat.sendMessage({
+              message: `Tool write_document succeeded. PDF document saved as "${filename}". ${result}`,
+            });
+          } else {
+            onProposeScript(script, `Create PDF document: ${filename}`);
+            response = await chat.sendMessage({
+              message: `Tool write_document: Python script proposed to create PDF "${filename}". The user must run it.`,
+            });
+          }
+        } else {
+          response = await chat.sendMessage({
+            message: `Tool write_document failed: unknown format "${fmt}". Supported: txt, docx, pdf.`,
+          });
+        }
+      } catch (e: any) {
+        response = await chat.sendMessage({ message: `Tool write_document failed: ${e.message}` });
       }
     } else if (call.name === 'propose_python_script') {
       onProposeScript(call.args.script as string, call.args.explanation as string);
