@@ -497,6 +497,120 @@ export default function App() {
       }
     };
 
+  // ── Handoff callback ────────────────────────────────────────────────────────
+
+  /**
+   * Called when a non-manager agent uses the handoff_to_agent tool.
+   * Runs the target agent's LLM with the given message and records the link.
+   * The target agent is called with its own full capabilities, including its
+   * own handoff agents, enabling a multi-hop pipeline.
+   */
+  const buildHandoffAgentCallback = (fromId: string, fromName: string) =>
+    async (targetId: string, message: string): Promise<string> => {
+      const target = agentsRef.current.find(a => a.id === targetId);
+      if (!target) throw new Error(`Agent with ID "${targetId}" not found.`);
+
+      setAgents(prev => prev.map(a => a.id === targetId ? { ...a, isLoading: true } : a));
+
+      const targetLog = (msg: string) =>
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === targetId ? { ...a, terminalLogs: [...a.terminalLogs, msg] } : a,
+          ),
+        );
+
+      // Agents available to the target for further handoff (everyone except the target itself)
+      const targetHandoffAgents: AgentRef[] = agentsRef.current
+        .filter(a => a.id !== targetId)
+        .map(a => ({ id: a.id, name: a.name }));
+
+      let reply = '';
+      try {
+        const response = await processChatTurn(
+          message,
+          target.messages.filter(m => m.role !== 'system'),
+          target.dirHandle,
+          (script, explanation) => updateAgent(targetId, { proposedScript: { code: script, explanation } }),
+          targetLog,
+          {
+            modelId: target.modelId,
+            provider: target.provider,
+            enableWebSearch: target.enableWebSearch,
+            agentName: target.name,
+            customSystemPrompt: target.systemPrompt,
+            isManager: target.role === 'manager',
+            isRecursive: target.role === 'manager' && target.recursive,
+            spawnedAgents: agentsRef.current
+              .filter(a => a.parentId === targetId)
+              .map(a => ({ id: a.id, name: a.name })),
+            onSpawnAgent: target.role === 'manager' ? buildSpawnAgentCallback(targetId) : undefined,
+            onMessageAgent:
+              target.role === 'manager'
+                ? buildMessageAgentCallback(targetId, target.name)
+                : undefined,
+            onRequestSignoff:
+              target.role === 'manager' && target.recursive
+                ? buildRequestSignoffCallback(targetId)
+                : undefined,
+            handoffAgents: target.role !== 'manager' ? targetHandoffAgents : [],
+            onHandoffToAgent:
+              target.role !== 'manager'
+                ? buildHandoffAgentCallback(targetId, target.name)
+                : undefined,
+          },
+        );
+
+        reply = response.content;
+
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === targetId
+              ? {
+                  ...a,
+                  isLoading: false,
+                  messages: [
+                    ...a.messages,
+                    { role: 'user', content: `[From ${fromName}]: ${message}` },
+                    response as Message,
+                  ],
+                }
+              : a,
+          ),
+        );
+      } catch (err: any) {
+        reply = `Error: ${err.message}`;
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === targetId
+              ? {
+                  ...a,
+                  isLoading: false,
+                  messages: [
+                    ...a.messages,
+                    { role: 'system', content: `Error from handoff call: ${err.message}` },
+                  ],
+                }
+              : a,
+          ),
+        );
+      }
+
+      // Record message link for the graph
+      setMessageLinks(prev => {
+        const existing = prev.find(l => l.fromId === fromId && l.toId === targetId);
+        if (existing) {
+          return prev.map(l =>
+            l.fromId === fromId && l.toId === targetId
+              ? { ...l, messageCount: l.messageCount + 1, lastMessage: message }
+              : l,
+          );
+        }
+        return [...prev, { fromId, toId: targetId, messageCount: 1, lastMessage: message }];
+      });
+
+      return reply;
+    };
+
   // ── Chat ────────────────────────────────────────────────────────────────────
 
   const handleSendMessage = async (agentId: string) => {
@@ -523,6 +637,11 @@ export default function App() {
       .filter(a => a.parentId === agentId)
       .map(a => ({ id: a.id, name: a.name }));
 
+    // Agents available for handoff (all agents except the current one)
+    const handoffAgents: AgentRef[] = agentsRef.current
+      .filter(a => a.id !== agentId)
+      .map(a => ({ id: a.id, name: a.name }));
+
     try {
       const responseMsg = await processChatTurn(
         userMsg,
@@ -547,6 +666,11 @@ export default function App() {
           onRequestSignoff:
             agent.role === 'manager' && agent.recursive
               ? buildRequestSignoffCallback(agentId)
+              : undefined,
+          handoffAgents: agent.role !== 'manager' ? handoffAgents : [],
+          onHandoffToAgent:
+            agent.role !== 'manager'
+              ? buildHandoffAgentCallback(agentId, agent.name)
               : undefined,
         },
       );
@@ -1220,7 +1344,9 @@ export default function App() {
                         : `${activeAgent.name} can spawn workers and delegate tasks…`
                       : activeAgent.role === 'authoriser'
                       ? `${activeAgent.name} reviews work and provides APPROVED/REJECTED decisions…`
-                      : `Ask ${activeAgent.name} to create a file, search the web, write a script…`
+                      : agents.length > 1
+                      ? `Ask ${activeAgent.name} to write a document, build a tool, analyse data, or hand off to another agent…`
+                      : `Ask ${activeAgent.name} to write a document, build a tool, run a script, or search the web…`
                   }
                   disabled={activeAgent.isLoading}
                   className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-4 pr-12 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 disabled:opacity-50 resize-none"

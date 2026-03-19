@@ -36,6 +36,58 @@ const baseToolDeclarations: FunctionDeclaration[] = [
     },
   },
   {
+    name: 'create_document',
+    description:
+      'Write a well-structured, human-readable document to a file in the workspace. ' +
+      'Use this for reports, specifications, plans, analyses, READMEs, meeting notes, and any ' +
+      'content intended for people to read — not just raw code files.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        filename: {
+          type: Type.STRING,
+          description: 'The filename including extension (e.g., report.md, spec.txt, README.md)',
+        },
+        content: {
+          type: Type.STRING,
+          description: 'The full document content. Markdown formatting is supported and encouraged.',
+        },
+        document_type: {
+          type: Type.STRING,
+          description:
+            'The kind of document: report | specification | readme | analysis | plan | notes | other',
+        },
+      },
+      required: ['filename', 'content'],
+    },
+  },
+  {
+    name: 'build_tool',
+    description:
+      'Create a reusable Python tool script and save it to the workspace. ' +
+      'Use this to build utilities, data processors, automation helpers, or any function library ' +
+      'that other agents (or the user) can run later via propose_python_script.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        tool_name: {
+          type: Type.STRING,
+          description:
+            'The tool filename without extension (e.g., "csv_parser" saves as csv_parser.py)',
+        },
+        description: {
+          type: Type.STRING,
+          description: 'What the tool does, its inputs, and how to use it.',
+        },
+        script: {
+          type: Type.STRING,
+          description: 'The Python source code, including all function and class definitions.',
+        },
+      },
+      required: ['tool_name', 'description', 'script'],
+    },
+  },
+  {
     name: 'propose_python_script',
     description:
       'Propose a Python script to automate a task, process data, or edit complex files (Excel, Word, PDF). The script will be shown to the user for review before execution.',
@@ -92,6 +144,29 @@ const managerToolDeclarations: FunctionDeclaration[] = [
     },
   },
 ];
+
+/** Tool available to non-manager agents to forward work to another agent in the pipeline. */
+const handoffAgentTool: FunctionDeclaration = {
+  name: 'handoff_to_agent',
+  description:
+    'Pass your completed output or the next step of a task to another agent so the pipeline can continue. ' +
+    'The receiving agent will process the message using all of its own tools and capabilities, then return a result.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      agentId: {
+        type: Type.STRING,
+        description: 'The ID of the agent to hand off to.',
+      },
+      message: {
+        type: Type.STRING,
+        description:
+          'The output, findings, or next-step task to pass to that agent. Be thorough — include all context they need.',
+      },
+    },
+    required: ['agentId', 'message'],
+  },
+};
 
 /** Tool only available to recursive manager agents to request authoriser sign-off. */
 const requestSignoffTool: FunctionDeclaration = {
@@ -168,6 +243,10 @@ export interface ProcessChatOptions {
   isRecursive?: boolean;
   /** Called when a recursive manager invokes request_signoff. Returns APPROVED/REJECTED string. */
   onRequestSignoff?: (summary: string) => Promise<string>;
+  /** Agents this agent can hand off work to (non-manager agents only). */
+  handoffAgents?: AgentRef[];
+  /** Called when the agent invokes handoff_to_agent. Returns the target agent's reply. */
+  onHandoffToAgent?: (agentId: string, message: string) => Promise<string>;
 }
 
 function buildSystemInstruction(
@@ -177,12 +256,16 @@ function buildSystemInstruction(
   spawnedAgents: AgentRef[] = [],
   isRecursive: boolean = false,
   customSystemPrompt: string = '',
+  handoffAgents: AgentRef[] = [],
 ): string {
   const lines = [
-    `You are ${agentName}, a powerful Local AI Assistant.`,
-    "You have access to a local folder on the user's computer.",
-    'You can read and write files directly using tools.',
-    'If the user asks you to process complex files (Excel, Word, PDF, PowerPoint, images),',
+    `You are ${agentName}, an intelligent AI copilot.`,
+    'You help users think through problems, write code, create documents, build tools, and accomplish real-world tasks end-to-end.',
+    'You have access to a local workspace folder and a rich set of tools. Think step-by-step, choose the right tool for each sub-task, and produce high-quality, actionable output.',
+    'Use \'create_document\' to write reports, plans, specifications, analyses, READMEs, and any other human-readable documents.',
+    'Use \'build_tool\' to create reusable Python utilities or scripts that can be used by you or other agents later.',
+    'Use \'read_file\' and \'write_file\' for direct file read/write access.',
+    'If the user asks you to process complex binary files (Excel, Word, PDF, PowerPoint, images),',
     'you MUST write a Python script to do it because you cannot read binary files directly.',
     "Propose Python scripts using the 'propose_python_script' tool; the user will review and run them.",
     'In your Python scripts you can install packages with micropip',
@@ -220,6 +303,14 @@ function buildSystemInstruction(
     );
   }
 
+  if (!isManager && handoffAgents.length > 0) {
+    lines.push(
+      "You can pass completed work to another agent in the pipeline using 'handoff_to_agent'.",
+      'Use handoff_to_agent when you have finished your part of a task and the next step should be handled by a different agent.',
+      `Available agents for handoff: ${handoffAgents.map(a => `${a.name} (ID: ${a.id})`).join(', ')}.`,
+    );
+  }
+
   if (customSystemPrompt.trim()) {
     lines.push(`\n\nTask Context & Instructions:\n${customSystemPrompt.trim()}`);
   }
@@ -247,6 +338,8 @@ export async function processChatTurn(
     customSystemPrompt = '',
     isRecursive = false,
     onRequestSignoff,
+    handoffAgents = [],
+    onHandoffToAgent,
   } = options;
 
   const systemInstruction = buildSystemInstruction(
@@ -256,6 +349,7 @@ export async function processChatTurn(
     spawnedAgents,
     isRecursive,
     customSystemPrompt,
+    handoffAgents,
   );
 
   // ── Ollama path (straightforward chat, no tool calling) ───────────────────
@@ -277,6 +371,7 @@ export async function processChatTurn(
     ...(enableWebSearch ? [webSearchTool] : []),
     ...(isManager ? managerToolDeclarations : []),
     ...(isManager && isRecursive ? [requestSignoffTool] : []),
+    ...(!isManager && handoffAgents.length > 0 && onHandoffToAgent ? [handoffAgentTool] : []),
   ];
 
   const chat = ai.chats.create({
@@ -323,6 +418,33 @@ export async function processChatTurn(
         response = await chat.sendMessage({ message: 'Tool write_file succeeded.' });
       } catch (e: any) {
         response = await chat.sendMessage({ message: `Tool write_file failed: ${e.message}` });
+      }
+    } else if (call.name === 'create_document') {
+      if (!dirHandle) throw new Error('No directory selected.');
+      try {
+        await writeFile(dirHandle, call.args.filename as string, call.args.content as string);
+        const docType = (call.args.document_type as string) || 'document';
+        onLog(`Document created: ${call.args.filename} (${docType})`);
+        response = await chat.sendMessage({
+          message: `Tool create_document succeeded. ${docType} saved as "${call.args.filename}".`,
+        });
+      } catch (e: any) {
+        response = await chat.sendMessage({ message: `Tool create_document failed: ${e.message}` });
+      }
+    } else if (call.name === 'build_tool') {
+      if (!dirHandle) throw new Error('No directory selected.');
+      try {
+        const toolFilename = `${call.args.tool_name as string}.py`;
+        const header = `# Tool: ${call.args.tool_name as string}\n# ${call.args.description as string}\n\n`;
+        await writeFile(dirHandle, toolFilename, header + (call.args.script as string));
+        onLog(`Tool built: ${toolFilename}`);
+        response = await chat.sendMessage({
+          message:
+            `Tool build_tool succeeded. Python tool saved as "${toolFilename}". ` +
+            'Other agents can use it via propose_python_script.',
+        });
+      } catch (e: any) {
+        response = await chat.sendMessage({ message: `Tool build_tool failed: ${e.message}` });
       }
     } else if (call.name === 'propose_python_script') {
       onProposeScript(call.args.script as string, call.args.explanation as string);
@@ -393,6 +515,25 @@ export async function processChatTurn(
         response = await chat.sendMessage({ message: `request_signoff result: ${result}` });
       } catch (e: any) {
         response = await chat.sendMessage({ message: `request_signoff failed: ${e.message}` });
+      }
+    } else if (call.name === 'handoff_to_agent') {
+      if (!onHandoffToAgent) {
+        response = await chat.sendMessage({
+          message: 'handoff_to_agent is not available in this context.',
+        });
+      } else {
+        try {
+          onLog(`Handing off to agent: ${call.args.agentId}`);
+          const reply = await onHandoffToAgent(
+            call.args.agentId as string,
+            call.args.message as string,
+          );
+          response = await chat.sendMessage({
+            message: `handoff_to_agent succeeded. Agent ${call.args.agentId} responded: ${reply}`,
+          });
+        } catch (e: any) {
+          response = await chat.sendMessage({ message: `handoff_to_agent failed: ${e.message}` });
+        }
       }
     } else {
       // Unknown tool – break to avoid infinite loop
