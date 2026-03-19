@@ -1,0 +1,27 @@
+# Ollama model-backend for Local LM
+#
+# Run on your laptop or on an EC2 instance:
+#
+#   docker compose up -d
+#
+# Then point the desktop app at:
+#   http://<host-ip>:11434   (Settings → Ollama URL)
+#
+# Models are stored in the named volume "ollama_models" so they survive
+# container restarts and are not downloaded again after the first pull.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: local-lm-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      # Listen on all interfaces so the desktop app can reach it
+      - OLLAMA_HOST=0.0.0.0
+
+volumes:
+  ollama_models:

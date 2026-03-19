@@ -1,19 +1,24 @@
 import { GoogleGenAI, Type, FunctionDeclaration } from '@google/genai';
 import { readFile, writeFile } from './fs';
+import { webSearch } from './search';
+import { getOllamaUrl } from './models';
+import type { ModelProvider } from './models';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
-export const tools: FunctionDeclaration[] = [
+// ── Tool declarations ─────────────────────────────────────────────────────────
+
+const baseToolDeclarations: FunctionDeclaration[] = [
   {
     name: 'read_file',
     description: "Read the contents of a text-based file from the user's local workspace folder.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        filename: { type: Type.STRING, description: 'The name of the file to read (e.g., data.txt)' }
+        filename: { type: Type.STRING, description: 'The name of the file to read (e.g., data.txt)' },
       },
-      required: ['filename']
-    }
+      required: ['filename'],
+    },
   },
   {
     name: 'write_file',
@@ -22,84 +27,307 @@ export const tools: FunctionDeclaration[] = [
       type: Type.OBJECT,
       properties: {
         filename: { type: Type.STRING, description: 'The name of the file to write' },
-        content: { type: Type.STRING, description: 'The text content to write to the file' }
+        content: { type: Type.STRING, description: 'The text content to write to the file' },
       },
-      required: ['filename', 'content']
-    }
+      required: ['filename', 'content'],
+    },
   },
   {
     name: 'propose_python_script',
-    description: 'Propose a Python script to automate a task, process data, or edit complex files (Excel, Word, PDF). The script will be shown to the user for review before execution. The script can use `await read_file(filename)` and `await write_file(filename, content)` to interact with the workspace. It can also use `await micropip.install("package_name")` to install packages like openpyxl, python-docx, etc.',
+    description:
+      'Propose a Python script to automate a task, process data, or edit complex files (Excel, Word, PDF). The script will be shown to the user for review before execution.',
     parameters: {
       type: Type.OBJECT,
       properties: {
         script: { type: Type.STRING, description: 'The Python code to execute.' },
-        explanation: { type: Type.STRING, description: 'Explanation of what the script does.' }
+        explanation: { type: Type.STRING, description: 'Explanation of what the script does.' },
       },
-      required: ['script', 'explanation']
+      required: ['script', 'explanation'],
+    },
+  },
+];
+
+const webSearchTool: FunctionDeclaration = {
+  name: 'web_search',
+  description: 'Search the internet for up-to-date information on a topic.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      query: { type: Type.STRING, description: 'The search query' },
+    },
+    required: ['query'],
+  },
+};
+
+/** Tools only available to manager agents. */
+const managerToolDeclarations: FunctionDeclaration[] = [
+  {
+    name: 'spawn_agent',
+    description:
+      'Create a new worker agent and give it a name and an initial task. ' +
+      'Returns the new agent\'s ID so you can later message it with message_agent.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        name: { type: Type.STRING, description: 'A short, descriptive name for the new worker agent.' },
+        task: { type: Type.STRING, description: 'The initial task or instruction for the worker agent.' },
+      },
+      required: ['name', 'task'],
+    },
+  },
+  {
+    name: 'message_agent',
+    description:
+      'Send a message or sub-task to one of your worker agents and receive their response.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        agentId: { type: Type.STRING, description: 'The ID of the worker agent to message.' },
+        message: { type: Type.STRING, description: 'The message or task to send to the worker.' },
+      },
+      required: ['agentId', 'message'],
+    },
+  },
+];
+
+// ── Ollama helper ─────────────────────────────────────────────────────────────
+
+async function ollamaChat(
+  model: string,
+  messages: Array<{ role: string; content: string }>,
+  systemPrompt: string,
+): Promise<string> {
+  const body = JSON.stringify({
+    model,
+    messages: [{ role: 'system', content: systemPrompt }, ...messages],
+    stream: false,
+  });
+
+  const res = await fetch(`${getOllamaUrl()}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  });
+
+  if (!res.ok) {
+    throw new Error(
+      `Ollama returned ${res.status}. Make sure Ollama is running and the selected model has been downloaded.`,
+    );
+  }
+
+  const data = (await res.json()) as any;
+  return (data.message?.content as string) || '';
+}
+
+// ── Main export ───────────────────────────────────────────────────────────────
+
+/** A lightweight reference to an agent used in tool callbacks. */
+export interface AgentRef {
+  id: string;
+  name: string;
+}
+
+export interface ProcessChatOptions {
+  /** Full model identifier, e.g. "gemini-3.1-pro-preview" or "llama3.2". */
+  modelId?: string;
+  provider?: ModelProvider;
+  enableWebSearch?: boolean;
+  agentName?: string;
+  /** When true the agent receives spawn_agent + message_agent tools (Gemini only). */
+  isManager?: boolean;
+  /** Worker agents this manager has already spawned – included in the system prompt. */
+  spawnedAgents?: AgentRef[];
+  /** Called when the manager invokes spawn_agent. Returns the new agent's ref. */
+  onSpawnAgent?: (name: string, task: string) => Promise<AgentRef>;
+  /** Called when the manager invokes message_agent. Returns the worker's reply. */
+  onMessageAgent?: (agentId: string, message: string) => Promise<string>;
+}
+
+function buildSystemInstruction(
+  agentName: string,
+  enableWebSearch: boolean,
+  isManager: boolean = false,
+  spawnedAgents: AgentRef[] = [],
+): string {
+  const lines = [
+    `You are ${agentName}, a powerful Local AI Assistant.`,
+    "You have access to a local folder on the user's computer.",
+    'You can read and write files directly using tools.',
+    'If the user asks you to process complex files (Excel, Word, PDF, PowerPoint, images),',
+    'you MUST write a Python script to do it because you cannot read binary files directly.',
+    "Propose Python scripts using the 'propose_python_script' tool; the user will review and run them.",
+    'In your Python scripts you can install packages with micropip',
+    '(e.g. `await micropip.install("openpyxl")`).',
+    'Use `content = await read_file("file.txt")` and `await write_file("file.txt", content)`',
+    'in scripts for workspace file access.',
+  ];
+
+  if (enableWebSearch) {
+    lines.push("You can search the internet for current information using the 'web_search' tool.");
+  }
+
+  if (isManager) {
+    lines.push(
+      'You are a MANAGER AGENT. You can break complex tasks down and delegate them to worker agents.',
+      "Use 'spawn_agent' to create a new worker agent, giving it a name and an initial task description.",
+      "Use 'message_agent' to send instructions to a worker agent and receive its response.",
+      'Synthesise the workers\' responses and provide a final answer to the user.',
+    );
+    if (spawnedAgents.length > 0) {
+      lines.push(
+        `Your worker agents: ${spawnedAgents.map(a => `${a.name} (ID: ${a.id})`).join(', ')}.`,
+      );
+    } else {
+      lines.push('You have no worker agents yet. Use spawn_agent to create them when needed.');
     }
   }
-];
+
+  return lines.join(' ');
+}
 
 export async function processChatTurn(
   prompt: string,
-  chatHistory: any[],
+  chatHistory: Array<{ role: string; content: string }>,
   dirHandle: FileSystemDirectoryHandle | null,
   onProposeScript: (script: string, explanation: string) => void,
-  onLog: (msg: string) => void
-) {
+  onLog: (msg: string) => void,
+  options: ProcessChatOptions = {},
+): Promise<{ role: string; content: string }> {
+  const {
+    modelId = 'gemini-3.1-pro-preview',
+    provider = 'gemini',
+    enableWebSearch = false,
+    agentName = 'AI Assistant',
+    isManager = false,
+    spawnedAgents = [],
+    onSpawnAgent,
+    onMessageAgent,
+  } = options;
+
+  const systemInstruction = buildSystemInstruction(agentName, enableWebSearch, isManager, spawnedAgents);
+
+  // ── Ollama path (straightforward chat, no tool calling) ───────────────────
+  if (provider === 'ollama') {
+    const messages = chatHistory
+      .filter(m => m.role === 'user' || m.role === 'assistant')
+      .map(m => ({ role: m.role, content: m.content }));
+    messages.push({ role: 'user', content: prompt });
+
+    onLog(`Using Ollama model: ${modelId}`);
+    const text = await ollamaChat(modelId, messages, systemInstruction);
+    return { role: 'assistant', content: text };
+  }
+
+  // ── Gemini path (with tool calling) ──────────────────────────────────────
+  const tools = [
+    ...baseToolDeclarations,
+    ...(enableWebSearch ? [webSearchTool] : []),
+    ...(isManager ? managerToolDeclarations : []),
+  ];
+
   const chat = ai.chats.create({
-    model: 'gemini-3.1-pro-preview',
+    model: modelId,
     config: {
-      systemInstruction: `You are a powerful Local AI Assistant. You have access to a local folder on the user's computer.
-You can read and write files directly using tools.
-If the user asks you to process complex files (Excel, Word, PDF, PowerPoint, Images), you MUST write a Python script to do it, because you cannot read binary files directly through your text tools.
-Propose Python scripts using the 'propose_python_script' tool. The user will review and run them.
-In your Python scripts, you can install packages using micropip (e.g., \`await micropip.install('openpyxl')\`).
-You can read/write files in Python using the provided async helpers: \`content = await read_file('file.txt')\` and \`await write_file('file.txt', content)\`. Note that these helpers currently handle text. For binary files, you might need to use standard Python file I/O if the environment supports it, but Pyodide's virtual FS is mapped to the local FS via JS. Actually, standard Python \`open('filename', 'rb')\` will NOT work directly on the local FS in this web sandbox. You must rely on the JS helpers for file access, so stick to text/csv/json processing for now, or write scripts that generate new files.`,
+      systemInstruction,
       tools: [{ functionDeclarations: tools }],
       temperature: 0.2,
-    }
+    },
   });
 
-  // Replay history (simplified for prototype)
+  // Replay history so the model has context
   for (const msg of chatHistory) {
     if (msg.role === 'user') {
       await chat.sendMessage({ message: msg.content });
     }
   }
 
-  onLog("AI is thinking...");
+  onLog('AI is thinking...');
   let response = await chat.sendMessage({ message: prompt });
-  
-  // Handle function calls
+
+  // Handle tool calls in a loop
   while (response.functionCalls && response.functionCalls.length > 0) {
     const call = response.functionCalls[0];
     onLog(`AI called tool: ${call.name}`);
-    
+
     if (call.name === 'read_file') {
-      if (!dirHandle) throw new Error("No directory selected.");
+      if (!dirHandle) throw new Error('No directory selected.');
       try {
         const content = await readFile(dirHandle, call.args.filename as string);
-        response = await chat.sendMessage({ message: `Tool read_file result: ${content.substring(0, 2000)}${content.length > 2000 ? '... (truncated)' : ''}` });
+        const preview =
+          content.substring(0, 2000) + (content.length > 2000 ? '... (truncated)' : '');
+        response = await chat.sendMessage({ message: `Tool read_file result: ${preview}` });
       } catch (e: any) {
         response = await chat.sendMessage({ message: `Tool read_file failed: ${e.message}` });
       }
-    } 
-    else if (call.name === 'write_file') {
-      if (!dirHandle) throw new Error("No directory selected.");
+    } else if (call.name === 'write_file') {
+      if (!dirHandle) throw new Error('No directory selected.');
       try {
         await writeFile(dirHandle, call.args.filename as string, call.args.content as string);
-        response = await chat.sendMessage({ message: `Tool write_file succeeded.` });
+        response = await chat.sendMessage({ message: 'Tool write_file succeeded.' });
       } catch (e: any) {
         response = await chat.sendMessage({ message: `Tool write_file failed: ${e.message}` });
       }
-    }
-    else if (call.name === 'propose_python_script') {
+    } else if (call.name === 'propose_python_script') {
       onProposeScript(call.args.script as string, call.args.explanation as string);
-      return { role: 'assistant', content: `I have proposed a Python script: ${call.args.explanation}. Please review and run it in the code panel.` };
+      return {
+        role: 'assistant',
+        content: `I have proposed a Python script: ${call.args.explanation}. Please review and run it in the code panel.`,
+      };
+    } else if (call.name === 'web_search') {
+      try {
+        onLog(`Searching web for: ${call.args.query}`);
+        const sr = await webSearch(call.args.query as string);
+        const lines: string[] = [];
+        if (sr.abstract) lines.push(`Summary: ${sr.abstract}`);
+        for (const r of sr.results) {
+          lines.push(`- ${r.title}\n  ${r.snippet}\n  URL: ${r.url}`);
+        }
+        const resultsText = lines.join('\n') || 'No results found.';
+        response = await chat.sendMessage({
+          message: `Web search results for "${call.args.query}":\n${resultsText}`,
+        });
+      } catch (e: any) {
+        response = await chat.sendMessage({ message: `Web search failed: ${e.message}` });
+      }
+    } else if (call.name === 'spawn_agent') {
+      if (!onSpawnAgent) {
+        response = await chat.sendMessage({ message: 'spawn_agent is not available in this context.' });
+      } else {
+        try {
+          onLog(`Manager spawning agent: ${call.args.name}`);
+          const newAgent = await onSpawnAgent(
+            call.args.name as string,
+            call.args.task as string,
+          );
+          response = await chat.sendMessage({
+            message: `spawn_agent succeeded. New agent "${newAgent.name}" created with ID: ${newAgent.id}. Use message_agent with this ID to communicate with it.`,
+          });
+        } catch (e: any) {
+          response = await chat.sendMessage({ message: `spawn_agent failed: ${e.message}` });
+        }
+      }
+    } else if (call.name === 'message_agent') {
+      if (!onMessageAgent) {
+        response = await chat.sendMessage({ message: 'message_agent is not available in this context.' });
+      } else {
+        try {
+          onLog(`Manager messaging agent ID: ${call.args.agentId}`);
+          const reply = await onMessageAgent(
+            call.args.agentId as string,
+            call.args.message as string,
+          );
+          response = await chat.sendMessage({
+            message: `message_agent response from agent ${call.args.agentId}: ${reply}`,
+          });
+        } catch (e: any) {
+          response = await chat.sendMessage({ message: `message_agent failed: ${e.message}` });
+        }
+      }
+    } else {
+      // Unknown tool – break to avoid infinite loop
+      break;
     }
   }
 
-  return { role: 'assistant', content: response.text };
+  return { role: 'assistant', content: response.text ?? '' };
 }
