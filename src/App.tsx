@@ -2,13 +2,14 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Markdown from 'react-markdown';
 import {
   FolderOpen, FileText, Send, Play, Terminal, CheckCircle2,
-  AlertCircle, Plus, X, Edit2, Globe, ChevronDown, Download,
+  AlertCircle, Plus, X, Edit2, Globe, ChevronDown, Download, Settings,
 } from 'lucide-react';
 import { pickDirectory, listFiles } from './lib/fs';
 import { initPython, runPythonScript } from './lib/python';
 import { processChatTurn } from './lib/ai';
 import {
-  listOllamaModels, pullOllamaModel,
+  listOllamaModels, pullOllamaModel, testOllamaConnection,
+  getOllamaUrl, setOllamaUrl,
   DEFAULT_GEMINI_MODELS, POPULAR_OLLAMA_MODELS,
   type Model, type ModelProvider,
 } from './lib/models';
@@ -67,6 +68,11 @@ export default function App() {
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
   const [downloadStatus, setDownloadStatus] = useState('');
   const [pyodideInstance, setPyodideInstance] = useState<any>(null);
+
+  // Ollama settings
+  const [showSettings, setShowSettings] = useState(false);
+  const [ollamaUrlInput, setOllamaUrlInput] = useState(getOllamaUrl);
+  const [connectionStatus, setConnectionStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const tabInputRef = useRef<HTMLInputElement>(null);
@@ -303,6 +309,39 @@ export default function App() {
     }
   };
 
+  // ── Ollama settings ─────────────────────────────────────────────────────────
+
+  const handleTestConnection = async () => {
+    setConnectionStatus('testing');
+    const ok = await testOllamaConnection(ollamaUrlInput);
+    setConnectionStatus(ok ? 'ok' : 'fail');
+  };
+
+  const handleSaveSettings = async () => {
+    setOllamaUrl(ollamaUrlInput);
+    setConnectionStatus('idle');
+    setShowSettings(false);
+    // Refresh model list with the new URL
+    const updated = await listOllamaModels();
+    setOllamaModels(updated);
+  };
+
+  const handleOpenSettings = () => {
+    setOllamaUrlInput(getOllamaUrl());
+    setConnectionStatus('idle');
+    setShowSettings(true);
+  };
+
+  const handleCloseDownloadModal = () => {
+    setShowDownloadModal(false);
+    setDownloadStatus('');
+  };
+
+  const handleOpenDownloadModal = () => {
+    setShowDownloadModal(true);
+    setShowModelPicker(false);
+  };
+
   // ── Derived values ──────────────────────────────────────────────────────────
 
   const allModels: Model[] = [...DEFAULT_GEMINI_MODELS, ...ollamaModels];
@@ -369,9 +408,18 @@ export default function App() {
           </button>
         </div>
 
-        <span className="text-xs text-zinc-600 px-3 shrink-0 hidden sm:block">
+        <span className="text-xs text-zinc-600 px-2 shrink-0 hidden sm:block">
           Double-click tab to rename
         </span>
+
+        {/* Settings button */}
+        <button
+          onClick={handleOpenSettings}
+          title="Ollama settings"
+          className="px-3 py-2 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors shrink-0"
+        >
+          <Settings className="w-4 h-4" />
+        </button>
       </div>
 
       {/* ── Main content (sidebar + chat + right panel) ────────────────────── */}
@@ -468,7 +516,7 @@ export default function App() {
                       Local (Ollama)
                     </p>
                     <button
-                      onClick={() => { setShowDownloadModal(true); setShowModelPicker(false); }}
+                      onClick={handleOpenDownloadModal}
                       className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
                     >
                       <Download className="w-3 h-3" /> Get models
@@ -644,7 +692,7 @@ export default function App() {
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-base font-semibold">Download Local Model (Ollama)</h2>
               <button
-                onClick={() => { setShowDownloadModal(false); setDownloadStatus(''); }}
+                onClick={handleCloseDownloadModal}
                 className="text-zinc-400 hover:text-white"
               >
                 <X className="w-4 h-4" />
@@ -693,6 +741,90 @@ export default function App() {
             {downloadStatus && (
               <p className="mt-3 text-xs text-zinc-400 font-mono break-words">{downloadStatus}</p>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Ollama settings modal ──────────────────────────────────────────── */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <Settings className="w-4 h-4 text-emerald-400" />
+                Ollama Settings
+              </h2>
+              <button
+                onClick={() => setShowSettings(false)}
+                className="text-zinc-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-zinc-400 mb-4">
+              Point the app at a local or remote Ollama instance — e.g. an EC2 server
+              running <code className="text-emerald-400">docker compose up -d</code> with the
+              provided <code className="text-emerald-400">docker-compose.yml</code>.
+            </p>
+
+            <label className="block text-xs font-medium text-zinc-400 mb-1">
+              Ollama URL
+            </label>
+            <div className="flex gap-2 mb-3">
+              <input
+                type="url"
+                value={ollamaUrlInput}
+                onChange={e => { setOllamaUrlInput(e.target.value); setConnectionStatus('idle'); }}
+                placeholder="http://localhost:11434"
+                className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+              />
+              <button
+                onClick={handleTestConnection}
+                disabled={connectionStatus === 'testing'}
+                className="px-3 py-2 bg-zinc-700 hover:bg-zinc-600 text-sm rounded-lg transition-colors disabled:opacity-50"
+              >
+                {connectionStatus === 'testing' ? 'Testing…' : 'Test'}
+              </button>
+            </div>
+
+            {connectionStatus === 'ok' && (
+              <p className="text-xs text-emerald-400 mb-3 flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Connected successfully
+              </p>
+            )}
+            {connectionStatus === 'fail' && (
+              <p className="text-xs text-red-400 mb-3 flex items-center gap-1">
+                <AlertCircle className="w-3.5 h-3.5" /> Could not reach Ollama at that URL
+              </p>
+            )}
+
+            <div className="bg-zinc-800/60 rounded-lg p-3 mb-4 text-xs text-zinc-400 space-y-1">
+              <p className="font-semibold text-zinc-300">Quick-start on any machine:</p>
+              <p>1. Install Docker, then run:</p>
+              <pre className="text-emerald-400 mt-1">docker compose up -d</pre>
+              <p className="mt-1">For NVIDIA GPU (EC2):</p>
+              <pre className="text-emerald-400 mt-1">
+                docker compose -f docker-compose.yml \{'\n'}
+                {'               '}-f docker-compose.gpu.yml up -d
+              </pre>
+              <p className="mt-1">Then set the URL to <code>http://&lt;server-ip&gt;:11434</code></p>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowSettings(false)}
+                className="px-4 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveSettings}
+                className="px-4 py-2 text-sm bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium rounded-lg transition-colors"
+              >
+                Save
+              </button>
+            </div>
           </div>
         </div>
       )}

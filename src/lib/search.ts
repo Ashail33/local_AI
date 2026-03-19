@@ -11,28 +11,17 @@ export interface SearchResponse {
 }
 
 /**
- * Search the web via the backend proxy (Docker mode) or directly via the
- * DuckDuckGo Instant Answer API (browser/development mode).
+ * Search the web using the DuckDuckGo Instant Answer API.
+ * No API key required; results are available without sign-up.
  */
 export async function webSearch(query: string): Promise<SearchResponse> {
-  // Try the server-side proxy first (available in Docker / production)
-  try {
-    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-    if (res.ok) {
-      return (await res.json()) as SearchResponse;
-    }
-  } catch {
-    // fall through to direct call
-  }
-
-  // Fallback: call DuckDuckGo directly from the browser
   const url =
     `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}` +
     `&format=json&no_html=1&skip_disambig=1`;
 
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`Search failed with status ${res.status}`);
+    throw new Error(`Search request failed with status ${res.status}`);
   }
 
   const data = (await res.json()) as any;

@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type, FunctionDeclaration } from '@google/genai';
 import { readFile, writeFile } from './fs';
 import { webSearch } from './search';
+import { getOllamaUrl } from './models';
 import type { ModelProvider } from './models';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
@@ -60,9 +61,6 @@ const webSearchTool: FunctionDeclaration = {
 
 // ── Ollama helper ─────────────────────────────────────────────────────────────
 
-/** Candidate base URLs to reach Ollama – Docker proxy first, then direct. */
-const OLLAMA_BASES = ['/api/ollama', 'http://localhost:11434'];
-
 async function ollamaChat(
   model: string,
   messages: Array<{ role: string; content: string }>,
@@ -74,25 +72,20 @@ async function ollamaChat(
     stream: false,
   });
 
-  for (const base of OLLAMA_BASES) {
-    try {
-      const res = await fetch(`${base}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-      });
-      if (res.ok) {
-        const data = (await res.json()) as any;
-        return (data.message?.content as string) || '';
-      }
-    } catch {
-      // try next endpoint
-    }
+  const res = await fetch(`${getOllamaUrl()}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  });
+
+  if (!res.ok) {
+    throw new Error(
+      `Ollama returned ${res.status}. Make sure Ollama is running and the selected model has been downloaded.`,
+    );
   }
 
-  throw new Error(
-    'Could not connect to Ollama. Make sure Ollama is running and the selected model has been downloaded.',
-  );
+  const data = (await res.json()) as any;
+  return (data.message?.content as string) || '';
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
@@ -103,6 +96,25 @@ export interface ProcessChatOptions {
   provider?: ModelProvider;
   enableWebSearch?: boolean;
   agentName?: string;
+}
+
+function buildSystemInstruction(agentName: string, enableWebSearch: boolean): string {
+  const lines = [
+    `You are ${agentName}, a powerful Local AI Assistant.`,
+    "You have access to a local folder on the user's computer.",
+    'You can read and write files directly using tools.',
+    'If the user asks you to process complex files (Excel, Word, PDF, PowerPoint, images),',
+    'you MUST write a Python script to do it because you cannot read binary files directly.',
+    "Propose Python scripts using the 'propose_python_script' tool; the user will review and run them.",
+    'In your Python scripts you can install packages with micropip',
+    '(e.g. `await micropip.install("openpyxl")`).',
+    'Use `content = await read_file("file.txt")` and `await write_file("file.txt", content)`',
+    'in scripts for workspace file access.',
+  ];
+  if (enableWebSearch) {
+    lines.push("You can search the internet for current information using the 'web_search' tool.");
+  }
+  return lines.join(' ');
 }
 
 export async function processChatTurn(
@@ -120,20 +132,7 @@ export async function processChatTurn(
     agentName = 'AI Assistant',
   } = options;
 
-  const systemInstruction = `You are ${agentName}, a powerful Local AI Assistant. \
-You have access to a local folder on the user's computer. \
-You can read and write files directly using tools. \
-If the user asks you to process complex files (Excel, Word, PDF, PowerPoint, images), \
-you MUST write a Python script to do it because you cannot read binary files directly. \
-Propose Python scripts using the 'propose_python_script' tool; the user will review and run them. \
-In your Python scripts you can install packages with micropip \
-(e.g. \`await micropip.install('openpyxl')\`). \
-Use \`content = await read_file('file.txt')\` and \`await write_file('file.txt', content)\` \
-in scripts for workspace file access.${
-    enableWebSearch
-      ? "\nYou can search the internet for current information using the 'web_search' tool."
-      : ''
-  }`;
+  const systemInstruction = buildSystemInstruction(agentName, enableWebSearch);
 
   // ── Ollama path (straightforward chat, no tool calling) ───────────────────
   if (provider === 'ollama') {

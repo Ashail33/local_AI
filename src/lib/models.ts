@@ -13,36 +13,45 @@ export const DEFAULT_GEMINI_MODELS: Model[] = [
 
 /** Well-known Ollama models users can download. */
 export const POPULAR_OLLAMA_MODELS: Array<{ id: string; name: string; size: string }> = [
-  { id: 'llama3.2',          name: 'Llama 3.2 (3B)',        size: '~2 GB' },
-  { id: 'llama3.2:1b',       name: 'Llama 3.2 (1B)',        size: '~1 GB' },
-  { id: 'mistral',           name: 'Mistral 7B',            size: '~4 GB' },
-  { id: 'phi3',              name: 'Phi-3 Mini',            size: '~2 GB' },
-  { id: 'gemma2:2b',         name: 'Gemma 2 (2B)',          size: '~1.6 GB' },
-  { id: 'qwen2.5',           name: 'Qwen 2.5 (7B)',         size: '~4.7 GB' },
-  { id: 'codellama',         name: 'Code Llama 7B',         size: '~4 GB' },
-  { id: 'deepseek-coder:6.7b', name: 'DeepSeek Coder 6.7B', size: '~4 GB' },
+  { id: 'llama3.2',             name: 'Llama 3.2 (3B)',         size: '~2 GB' },
+  { id: 'llama3.2:1b',          name: 'Llama 3.2 (1B)',         size: '~1 GB' },
+  { id: 'mistral',              name: 'Mistral 7B',             size: '~4 GB' },
+  { id: 'phi3',                 name: 'Phi-3 Mini',             size: '~2 GB' },
+  { id: 'gemma2:2b',            name: 'Gemma 2 (2B)',           size: '~1.6 GB' },
+  { id: 'qwen2.5',              name: 'Qwen 2.5 (7B)',          size: '~4.7 GB' },
+  { id: 'codellama',            name: 'Code Llama 7B',          size: '~4 GB' },
+  { id: 'deepseek-coder:6.7b',  name: 'DeepSeek Coder 6.7B',   size: '~4 GB' },
 ];
 
-/** Candidate URLs to reach Ollama – Docker proxy first, then direct. */
-const OLLAMA_ENDPOINTS = ['/api/ollama', 'http://localhost:11434'];
+const OLLAMA_URL_KEY = 'ollamaUrl';
+const OLLAMA_URL_DEFAULT = 'http://localhost:11434';
 
-async function ollamaFetch(path: string, init?: RequestInit): Promise<Response | null> {
-  for (const base of OLLAMA_ENDPOINTS) {
-    try {
-      const res = await fetch(`${base}${path}`, init);
-      if (res.ok) return res;
-    } catch {
-      // try next
-    }
+/**
+ * Get the Ollama base URL. Users can change this in the app settings to point
+ * at a remote EC2 instance, e.g. "http://1.2.3.4:11434".
+ */
+export function getOllamaUrl(): string {
+  try {
+    return localStorage.getItem(OLLAMA_URL_KEY) || OLLAMA_URL_DEFAULT;
+  } catch {
+    return OLLAMA_URL_DEFAULT;
   }
-  return null;
+}
+
+/** Persist the Ollama base URL (strips trailing slash). */
+export function setOllamaUrl(url: string): void {
+  try {
+    localStorage.setItem(OLLAMA_URL_KEY, url.replace(/\/+$/, ''));
+  } catch {
+    // localStorage unavailable (e.g. private browsing) – ignore
+  }
 }
 
 /** Return all models currently available in the running Ollama instance. */
 export async function listOllamaModels(): Promise<Model[]> {
-  const res = await ollamaFetch('/api/tags');
-  if (!res) return [];
   try {
+    const res = await fetch(`${getOllamaUrl()}/api/tags`);
+    if (!res.ok) return [];
     const data = (await res.json()) as any;
     return (data.models || []).map((m: any) => ({
       id: m.name as string,
@@ -54,44 +63,47 @@ export async function listOllamaModels(): Promise<Model[]> {
   }
 }
 
-/** Pull (download) an Ollama model, streaming progress via the callback. */
+/**
+ * Test whether Ollama is reachable at the current URL.
+ * Returns true on success.
+ */
+export async function testOllamaConnection(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${url.replace(/\/+$/, '')}/api/tags`, { signal: AbortSignal.timeout(2500) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Pull (download) an Ollama model, streaming progress updates via the callback. */
 export async function pullOllamaModel(
   modelId: string,
   onProgress?: (status: string) => void,
 ): Promise<void> {
-  let lastError: Error = new Error('Could not reach Ollama service');
+  const response = await fetch(`${getOllamaUrl()}/api/pull`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: modelId }),
+  });
 
-  for (const base of OLLAMA_ENDPOINTS) {
-    try {
-      const response = await fetch(`${base}/api/pull`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: modelId }),
-      });
-
-      if (!response.ok || !response.body) continue;
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value);
-        for (const line of chunk.split('\n').filter(Boolean)) {
-          try {
-            const data = JSON.parse(line) as any;
-            if (onProgress && data.status) onProgress(data.status);
-          } catch {
-            // ignore malformed lines
-          }
-        }
-      }
-      return; // success
-    } catch (e) {
-      lastError = e as Error;
-    }
+  if (!response.ok || !response.body) {
+    throw new Error(`Ollama pull request failed: ${response.status}`);
   }
 
-  throw lastError;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    for (const line of decoder.decode(value).split('\n').filter(Boolean)) {
+      try {
+        const data = JSON.parse(line) as any;
+        if (onProgress && data.status) onProgress(data.status);
+      } catch {
+        // ignore malformed lines
+      }
+    }
+  }
 }
