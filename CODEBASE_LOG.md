@@ -121,3 +121,62 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - **Design Patterns**: Utilized functional programming patterns for managing state updates and ensuring immutability when adding or removing connections in the `connectedLinks` and `messageLinks` states.
 
 - **Future Considerations**: Developers should be aware of the new authorization model when implementing agent interactions. Ensure that any new features involving agent communication respect the established connection rules to maintain system integrity.
+
+---
+
+## 2026-03-19 17:48:34 UTC — `e813b2e`
+> Refactor manager agent: enforce orchestration-only behavior, add document writing and subfolder support (#14)
+
+* Initial plan
+
+* Fix manager agent: restrict tools and harden system prompt
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+* Add subfolder support, binary file writing, write_document/create_folder tools, and manager UI improvements
+
+- fs.ts: subfolder navigation via getOrCreateDir/splitPath, recursive listFiles,
+  writeBinaryFile for .docx/.pdf, createFolder for directory creation
+- python.ts: expose write_binary_file_js and create_folder_js bridges to Pyodide;
+  add write_binary_file and create_folder Python async helpers
+- ai.ts: add buildDocxScript/buildPdfScript (base64-safe content encoding);
+  add createFolderTool and writeDocumentTool declarations; add create_folder and
+  write_document tool call handlers; add onAutoRunScript to ProcessChatOptions;
+  update manager prompt with formatting rules; update worker prompt with new tools
+- App.tsx: import writeBinaryFile/readFileFs/writeFileFs/createFolderFs at top;
+  add buildAutoRunScriptCallback for auto-running Python scripts without user review;
+  pass onAutoRunScript in handleSendMessage, buildMessageAgentCallback, and
+  buildHandoffAgentCallback; add system messages in manager chat for spawn/receive
+  events; add Worker Agents panel in manager chat view
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+
+* Add spawned agent visibility, document writing tools, subfolder support, and output formatting
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+---------
+
+Co-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+
+- **Files/Modules Changed**: 
+  - `src/App.tsx`: Enhanced the manager's UI to support agent visibility and document writing features. Added auto-running Python script capabilities for document creation.
+  - `src/lib/ai.ts`: Introduced new tools for document writing (`write_document`), folder creation (`create_folder`), and updated existing tools to support subfolder paths and binary file writing.
+
+- **New Features**: 
+  - Added support for creating subfolders and writing binary files (e.g., `.docx`, `.pdf`) within the workspace.
+  - Implemented `onAutoRunScript` callback to allow automatic execution of Python scripts for document generation without user intervention.
+
+- **Bug Fixes/Refactors**: 
+  - Restricted manager agents to orchestration-only behavior, preventing them from executing code or building tools directly, ensuring task delegation to worker agents.
+  - Updated system prompts and tool declarations to reflect new capabilities and restrictions.
+
+- **Design Decisions**: 
+  - Utilized a structured approach to define tool declarations, clearly separating manager and worker capabilities to enforce proper orchestration patterns.
+  - Implemented a callback mechanism for auto-running scripts, improving user experience by reducing manual steps in document creation.
+
+- **Future Developer Considerations**: 
+  - Be mindful of the orchestration-only restrictions for manager agents; any new features should align with this design.
+  - When adding new tools or features, ensure they are properly integrated into the existing callback and messaging systems to maintain consistency in agent interactions.
