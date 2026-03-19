@@ -1026,8 +1026,9 @@ export default function App() {
         },
       );
 
-      // Check for idle response
-      const isIdle = responseMsg.content.trim().toUpperCase().startsWith('IDLE');
+      // Check for idle response — match only "IDLE" as the entire first line
+      const firstLine = responseMsg.content.trim().split('\n')[0].trim();
+      const isIdle = firstLine === 'IDLE';
       if (isIdle) {
         idleCountRef.current.set(agentId, (idleCountRef.current.get(agentId) ?? 0) + 1);
       } else {
@@ -1089,7 +1090,7 @@ export default function App() {
         idleCountRef.current.delete(agentId);
       }
     }
-  });
+  }, [agents]);
 
   // ── Python script runner ────────────────────────────────────────────────────
 
