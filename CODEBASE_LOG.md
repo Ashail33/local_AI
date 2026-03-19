@@ -180,3 +180,16 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 - **Future Developer Considerations**: 
   - Be mindful of the orchestration-only restrictions for manager agents; any new features should align with this design.
   - When adding new tools or features, ensure they are properly integrated into the existing callback and messaging systems to maintain consistency in agent interactions.
+
+---
+
+## 2026-03-19 17:57:50 UTC — `ccb767f`
+> Fix duplicate runPythonScript export causing build failure
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- The commit modifies the `src/lib/python.ts` file by removing the `runPythonScript` function export, which was causing a build failure due to duplication.
+- The removal of the function resolves conflicts that may have arisen from multiple definitions of `runPythonScript` within the codebase.
+- No new features were introduced; the change is purely a bug fix aimed at ensuring successful builds.
+- The design pattern of wrapping user scripts in an async function for top-level await usage was previously employed but is no longer applicable due to the function's removal.
+- Future developers should be aware of the potential for duplicate exports in the codebase and ensure that function names are unique to prevent similar build issues.
