@@ -1,10 +1,13 @@
 import { GoogleGenAI, Type, FunctionDeclaration } from '@google/genai';
 import { readFile, writeFile } from './fs';
 import { webSearch } from './search';
-import { getOllamaUrl } from './models';
+import { getOllamaUrl, getGeminiApiKey } from './models';
 import type { ModelProvider } from './models';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+/** Returns a GoogleGenAI client initialised with the current API key. */
+function getAiClient(): GoogleGenAI {
+  return new GoogleGenAI({ apiKey: getGeminiApiKey() });
+}
 
 // ── Tool declarations ─────────────────────────────────────────────────────────
 
@@ -219,6 +222,7 @@ export async function processChatTurn(
   }
 
   // ── Gemini path (with tool calling) ──────────────────────────────────────
+  const ai = getAiClient();
   const tools = [
     ...baseToolDeclarations,
     ...(enableWebSearch ? [webSearchTool] : []),
