@@ -18,6 +18,30 @@ import {
 } from './lib/models';
 import AgentGraph, { type MessageLink } from './components/AgentGraph';
 
+// ── Electron IPC bridge types ─────────────────────────────────────────────────
+
+declare global {
+  interface Window {
+    /**
+     * Exposed by electron/preload.ts via contextBridge.
+     * Only present when the app is running inside Electron.
+     */
+    ollamaSetup?: {
+      /** Returns true when the Ollama binary is found on this machine. */
+      checkInstalled: () => Promise<boolean>;
+      /** Download and open the platform-appropriate Ollama installer. */
+      install: () => Promise<{ success: boolean; error?: string }>;
+      /**
+       * Subscribe to installer-download progress messages.
+       * Returns an unsubscribe function.
+       */
+      onProgress: (callback: (msg: string) => void) => () => void;
+      /** e.g. "darwin", "win32", "linux" */
+      platform: string;
+    };
+  }
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Message = { role: 'user' | 'assistant' | 'system'; content: string };
@@ -95,6 +119,14 @@ export default function App() {
   // Gemini API key
   const [geminiApiKeyInput, setGeminiApiKeyInput] = useState(getGeminiApiKey);
 
+  // First-run Ollama setup (Electron only)
+  const OLLAMA_SETUP_DISMISSED_KEY = 'ollamaSetupDismissed';
+  const [showOllamaSetup, setShowOllamaSetup] = useState(false);
+  const [ollamaInstallStatus, setOllamaInstallStatus] = useState<
+    'idle' | 'downloading' | 'done' | 'error'
+  >('idle');
+  const [ollamaInstallProgress, setOllamaInstallProgress] = useState('');
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const tabInputRef = useRef<HTMLInputElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
@@ -110,6 +142,17 @@ export default function App() {
   // Probe for available Ollama models once on mount
   useEffect(() => {
     listOllamaModels().then(models => setOllamaModels(models));
+  }, []);
+
+  // First-run Ollama setup check (Electron only, shown at most once)
+  useEffect(() => {
+    if (!window.ollamaSetup) return;
+    if (localStorage.getItem(OLLAMA_SETUP_DISMISSED_KEY)) return;
+    window.ollamaSetup.checkInstalled()
+      .then(installed => { if (!installed) setShowOllamaSetup(true); })
+      .catch(err => console.warn('[OllamaSetup] checkInstalled failed:', err));
+    // OLLAMA_SETUP_DISMISSED_KEY is a module-level constant; safe to omit from deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Scroll to bottom when active agent's messages/logs change
@@ -484,6 +527,33 @@ export default function App() {
   const handleCloseDownloadModal = () => {
     setShowDownloadModal(false);
     setDownloadStatus('');
+  };
+
+  // ── First-run Ollama setup ───────────────────────────────────────────────────
+
+  const handleInstallOllama = async () => {
+    if (!window.ollamaSetup) return;
+    setOllamaInstallStatus('downloading');
+    setOllamaInstallProgress('Starting…');
+    const unsubscribe = window.ollamaSetup.onProgress(msg => setOllamaInstallProgress(msg));
+    try {
+      const result = await window.ollamaSetup.install();
+      if (result.success) {
+        setOllamaInstallStatus('done');
+      } else {
+        setOllamaInstallStatus('error');
+        setOllamaInstallProgress(result.error ?? 'Unknown error');
+      }
+    } finally {
+      unsubscribe();
+    }
+  };
+
+  const handleDismissOllamaSetup = () => {
+    localStorage.setItem(OLLAMA_SETUP_DISMISSED_KEY, '1');
+    setShowOllamaSetup(false);
+    setOllamaInstallStatus('idle');
+    setOllamaInstallProgress('');
   };
 
   const handleOpenDownloadModal = () => {
@@ -1110,6 +1180,121 @@ export default function App() {
                 Save
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── First-run Ollama setup dialog (Electron only) ─────────────────── */}
+      {showOllamaSetup && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0">
+                <Download className="w-5 h-5 text-emerald-400" />
+              </div>
+              <div>
+                <h2 className="text-base font-semibold">Install Ollama?</h2>
+                <p className="text-xs text-zinc-400 mt-0.5">Required to run AI models locally on your machine</p>
+              </div>
+            </div>
+
+            {ollamaInstallStatus === 'idle' && (
+              <>
+                <p className="text-sm text-zinc-300 mb-4">
+                  Ollama was not detected on your system. It lets you run powerful AI models
+                  completely offline — no API key needed.
+                  Would you like Local LM to download and install it now?
+                </p>
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={handleDismissOllamaSetup}
+                    className="px-4 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
+                  >
+                    Skip for now
+                  </button>
+                  <button
+                    onClick={handleInstallOllama}
+                    className="px-4 py-2 text-sm bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium rounded-lg transition-colors flex items-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download &amp; Install
+                  </button>
+                </div>
+              </>
+            )}
+
+            {ollamaInstallStatus === 'downloading' && (
+              <div className="space-y-3">
+                <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
+                  <div className="h-full bg-emerald-500 rounded-full animate-pulse w-full" />
+                </div>
+                <p className="text-xs text-zinc-400 font-mono break-words">
+                  {ollamaInstallProgress || 'Starting…'}
+                </p>
+              </div>
+            )}
+
+            {ollamaInstallStatus === 'done' && (
+              <>
+                <div className="flex items-center gap-2 text-emerald-400 mb-3">
+                  <CheckCircle2 className="w-5 h-5 shrink-0" />
+                  <p className="text-sm font-medium">Ollama installer launched!</p>
+                </div>
+                <p className="text-xs text-zinc-400 mb-4">
+                  {ollamaInstallProgress || 'Follow the on-screen setup instructions to complete the installation.'}
+                  {' '}Once Ollama is running, use the model picker to download a local AI model.
+                </p>
+                <div className="flex justify-end">
+                  <button
+                    onClick={handleDismissOllamaSetup}
+                    className="px-4 py-2 text-sm bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium rounded-lg transition-colors"
+                  >
+                    Got it
+                  </button>
+                </div>
+              </>
+            )}
+
+            {ollamaInstallStatus === 'error' && (
+              <>
+                <div className="flex items-center gap-2 text-red-400 mb-2">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
+                  <p className="text-sm font-medium">Download failed</p>
+                </div>
+                <p className="text-xs text-zinc-400 font-mono break-words mb-4">
+                  {ollamaInstallProgress}
+                </p>
+                <p className="text-xs text-zinc-400 mb-4">
+                  You can install Ollama manually from{' '}
+                  <a
+                    href="https://ollama.com/download"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-emerald-400 hover:underline"
+                  >
+                    ollama.com/download
+                  </a>
+                  .
+                </p>
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={handleDismissOllamaSetup}
+                    className="px-4 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                  <button
+                    onClick={() => {
+                      setOllamaInstallStatus('idle');
+                      setOllamaInstallProgress('');
+                    }}
+                    className="px-4 py-2 text-sm bg-zinc-700 hover:bg-zinc-600 text-white font-medium rounded-lg transition-colors"
+                  >
+                    Retry
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
