@@ -3,7 +3,7 @@ import Markdown from 'react-markdown';
 import {
   FolderOpen, FileText, Send, Play, Terminal, CheckCircle2,
   AlertCircle, Plus, X, Edit2, Globe, ChevronDown, Download, Settings,
-  Network, Crown, Shield, RefreshCw, MessageSquare,
+  Network, Crown, Shield, RefreshCw, MessageSquare, Power,
 } from 'lucide-react';
 import { pickDirectory, listFiles, writeBinaryFile, base64ToBytes, readFile as readFileFs, writeFile as writeFileFs, createFolder as createFolderFs } from './lib/fs';
 import { initPython, runPythonScript } from './lib/python';
@@ -67,6 +67,8 @@ interface Agent {
   systemPrompt: string;
   /** When true (manager only), agent keeps working until authoriser approves. */
   recursive: boolean;
+  /** When true (manager only), the agent runs autonomously in a live loop. */
+  isLive: boolean;
 }
 
 let agentCounter = 1;
@@ -79,12 +81,14 @@ function createAgent(name?: string, role: Agent['role'] = 'worker', parentId: st
     parentId,
     modelId: 'gemini-3.1-pro-preview',
     provider: 'gemini',
-    enableWebSearch: false,
+    enableWebSearch: role === 'manager',
     messages: [
       {
         role: 'assistant',
         content:
-          'Hello! I am your Local AI Assistant. Please select a workspace folder to get started.',
+          role === 'manager'
+            ? 'Hello! I am your Manager Agent. I can create and coordinate worker agents, break down tasks, delegate work, and search the internet. Set me to **Live** mode to run autonomously, or send me a task to get started.'
+            : 'Hello! I am your Local AI Assistant. Please select a workspace folder to get started.',
       },
     ],
     dirHandle: null,
@@ -95,6 +99,7 @@ function createAgent(name?: string, role: Agent['role'] = 'worker', parentId: st
     input: '',
     systemPrompt: '',
     recursive: false,
+    isLive: false,
   };
 }
 
@@ -200,6 +205,14 @@ export default function App() {
   const updateAgent = useCallback((id: string, updates: Partial<Agent>) => {
     setAgents(prev => prev.map(a => (a.id === id ? { ...a, ...updates } : a)));
   }, []);
+
+  /** Timers driving the autonomous live-agent loop (one per live manager). */
+  const liveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  /**
+   * Consecutive idle ticks per agent. When a live manager has nothing to do it
+   * says "IDLE" and we back off exponentially to avoid wasting API calls.
+   */
+  const idleCountRef = useRef<Map<string, number>>(new Map());
 
   // ── Agent tab management ────────────────────────────────────────────────────
 
@@ -380,6 +393,18 @@ export default function App() {
         ...prev,
         { fromId: managerId, toId: newWorker.id, messageCount: 0, lastMessage: task, messages: [{ sender: managerAgent?.name ?? 'Manager', content: task }] },
       ]);
+      // Automatically authorize bidirectional communication so the worker can
+      // message the manager back via handoff_to_agent.
+      setConnectedLinks(prev => {
+        const links = [...prev];
+        if (!links.some(l => l.fromId === newWorker.id && l.toId === managerId)) {
+          links.push({ fromId: newWorker.id, toId: managerId });
+        }
+        if (!links.some(l => l.fromId === managerId && l.toId === newWorker.id)) {
+          links.push({ fromId: managerId, toId: newWorker.id });
+        }
+        return links;
+      });
 
       // Immediately execute the initial task so the manager receives real results.
       setAgents(prev =>
@@ -398,6 +423,10 @@ export default function App() {
         newWorker.systemPrompt,
         `You have been assigned this task by manager agent "${managerAgent?.name ?? 'manager'}". Complete it fully and autonomously.`,
       ].filter(Boolean).join('\n\n');
+      // The worker can hand results back to the manager
+      const workerHandoffTargets: AgentRef[] = managerAgent
+        ? [{ id: managerId, name: managerAgent.name }]
+        : [];
       try {
         const workerResponse = await processChatTurn(
           task,
@@ -413,6 +442,10 @@ export default function App() {
             agentName: newWorker.name,
             customSystemPrompt: managerContextPrompt,
             onAutoRunScript: buildAutoRunScriptCallback(newWorker.id),
+            handoffAgents: workerHandoffTargets,
+            onHandoffToAgent: workerHandoffTargets.length > 0
+              ? buildHandoffAgentCallback(newWorker.id, newWorker.name)
+              : undefined,
           },
         );
 
@@ -937,6 +970,128 @@ export default function App() {
     }
   };
 
+  // ── Live agent autonomous loop ──────────────────────────────────────────────
+
+  /**
+   * Autonomous tick for a live manager agent.
+   * Sends a continuation prompt so the manager can check on its team,
+   * delegate new work, or report progress without user input.
+   */
+  const handleLiveTick = async (agentId: string) => {
+    const agent = agentsRef.current.find(a => a.id === agentId);
+    if (!agent || !agent.isLive || agent.isLoading || agent.role !== 'manager') return;
+
+    const continuationPrompt =
+      'You are running in live autonomous mode. Continue working on your current objectives. ' +
+      'Check on your team status, process any remaining sub-tasks, delegate new work if needed, ' +
+      'and report progress. If everything is complete and there is nothing more to do right now, ' +
+      'respond with exactly "IDLE" on the first line.';
+
+    updateAgent(agentId, {
+      isLoading: true,
+      messages: [...agent.messages, { role: 'user' as const, content: `[Live Mode] ${continuationPrompt}` }],
+    });
+
+    const logToTerminal = (msg: string) =>
+      setAgents(prev =>
+        prev.map(a => a.id === agentId ? { ...a, terminalLogs: [...a.terminalLogs, msg] } : a),
+      );
+
+    const spawnedAgents: AgentRef[] = agentsRef.current
+      .filter(a => a.parentId === agentId)
+      .map(a => ({ id: a.id, name: a.name }));
+
+    try {
+      const responseMsg = await processChatTurn(
+        continuationPrompt,
+        agent.messages.filter(m => m.role !== 'system'),
+        agent.dirHandle,
+        (script, explanation) => updateAgent(agentId, { proposedScript: { code: script, explanation } }),
+        logToTerminal,
+        {
+          modelId: agent.modelId,
+          provider: agent.provider,
+          enableWebSearch: agent.enableWebSearch,
+          agentName: agent.name,
+          isManager: true,
+          isRecursive: agent.recursive,
+          customSystemPrompt: agent.systemPrompt,
+          spawnedAgents,
+          onSpawnAgent: buildSpawnAgentCallback(agentId),
+          onMessageAgent: buildMessageAgentCallback(agentId, agent.name),
+          onListAgents: buildListAgentsCallback(agentId),
+          onConnectAgents: buildConnectAgentsCallback(agentId),
+          onRequestSignoff: agent.recursive ? buildRequestSignoffCallback(agentId) : undefined,
+          onAutoRunScript: buildAutoRunScriptCallback(agentId),
+        },
+      );
+
+      // Check for idle response — match only "IDLE" as the entire first line
+      const firstLine = responseMsg.content.trim().split('\n')[0].trim();
+      const isIdle = firstLine === 'IDLE';
+      if (isIdle) {
+        idleCountRef.current.set(agentId, (idleCountRef.current.get(agentId) ?? 0) + 1);
+      } else {
+        idleCountRef.current.set(agentId, 0);
+      }
+
+      setAgents(prev =>
+        prev.map(a =>
+          a.id === agentId
+            ? { ...a, isLoading: false, messages: [...a.messages, responseMsg as Message] }
+            : a,
+        ),
+      );
+      await refreshFiles(agentId);
+    } catch (err: any) {
+      setAgents(prev =>
+        prev.map(a =>
+          a.id === agentId
+            ? {
+                ...a,
+                isLoading: false,
+                messages: [...a.messages, { role: 'system', content: `[Live Mode] Error: ${err.message}` }],
+              }
+            : a,
+        ),
+      );
+    }
+  };
+
+  /**
+   * Live-agent scheduler. Watches for managers that have isLive=true and
+   * are not currently loading, then schedules the next autonomous tick.
+   * Backs off when the manager is idle to avoid wasting API calls.
+   */
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const timers = liveTimersRef.current;
+
+    // Schedule ticks for live managers that are idle and not already scheduled
+    for (const agent of agents) {
+      if (agent.role === 'manager' && agent.isLive && !agent.isLoading && !timers.has(agent.id)) {
+        const idleCount = idleCountRef.current.get(agent.id) ?? 0;
+        // Back off: 8s base, doubling each idle tick, capped at 60s
+        const delay = Math.min(8000 * Math.pow(2, idleCount), 60000);
+        const timer = setTimeout(() => {
+          timers.delete(agent.id);
+          handleLiveTick(agent.id);
+        }, delay);
+        timers.set(agent.id, timer);
+      }
+    }
+
+    // Cancel timers for agents that are no longer live
+    for (const [agentId, timer] of timers.entries()) {
+      const agent = agents.find(a => a.id === agentId);
+      if (!agent || !agent.isLive) {
+        clearTimeout(timer);
+        timers.delete(agentId);
+        idleCountRef.current.delete(agentId);
+      }
+    }
+  }, [agents]);
+
   // ── Python script runner ────────────────────────────────────────────────────
 
   const handleRunScript = async (agentId: string) => {
@@ -1093,6 +1248,9 @@ export default function App() {
               )}
               {agent.role === 'authoriser' && (
                 <Shield className="w-3 h-3 text-amber-400 shrink-0" />
+              )}
+              {agent.isLive && (
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
               )}
               {editingTabId === agent.id ? (
                 <input
@@ -1309,6 +1467,7 @@ export default function App() {
               parentId: a.parentId,
               isLoading: a.isLoading,
               recursive: a.recursive,
+              isLive: a.isLive,
             }))}
             activeAgentId={activeAgentId}
             messageLinks={dedupedMessageLinks}
@@ -1404,6 +1563,32 @@ export default function App() {
                 >
                   <RefreshCw className="w-3 h-3" />
                   Recursive
+                </button>
+              )}
+
+              {/* Live mode toggle (manager only) */}
+              {activeAgent.role === 'manager' && (
+                <button
+                  onClick={() => {
+                    const goingLive = !activeAgent.isLive;
+                    updateAgent(activeAgent.id, { isLive: goingLive });
+                    if (goingLive) {
+                      idleCountRef.current.set(activeAgent.id, 0);
+                    }
+                  }}
+                  title={
+                    activeAgent.isLive
+                      ? 'Live mode active — click to stop autonomous operation'
+                      : 'Go Live: agent runs autonomously, checking on its team and processing tasks'
+                  }
+                  className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors ${
+                    activeAgent.isLive
+                      ? 'bg-green-600/20 text-green-400 border border-green-500/30 animate-pulse'
+                      : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'
+                  }`}
+                >
+                  <Power className="w-3 h-3" />
+                  {activeAgent.isLive ? 'Live ●' : 'Go Live'}
                 </button>
               )}
 
