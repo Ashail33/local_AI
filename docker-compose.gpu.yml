@@ -1,0 +1,18 @@
+# GPU override — apply on top of docker-compose.yml for NVIDIA EC2 instances
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Prerequisites on the EC2 host:
+#   - NVIDIA drivers installed
+#   - nvidia-container-toolkit installed
+#     https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
