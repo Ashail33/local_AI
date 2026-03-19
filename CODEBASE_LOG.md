@@ -219,3 +219,20 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - **Design Decisions**: The implementation introduces a context-rich system prompt for the worker, enhancing task execution by clarifying its delegation from the manager agent. A safety guard is added to prevent unbounded tool-call loops, limiting the maximum iterations to 30.
 
 - **Future Considerations**: Developers should be aware of the new `initialResponse` property in the `AgentRef` interface and the implications of the auto-execution feature on the overall agent communication flow. Care should be taken to handle potential errors during task execution, as these are now logged and reflected in the worker's message history.
+
+---
+
+## 2026-03-19 19:21:14 UTC — `451d72a`
+> Fix tool error handling, worker model inheritance, and message_agent context
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **Files Changed**: The commit modifies `src/App.tsx` and `src/lib/ai.ts` to improve error handling and enhance worker agent capabilities.
+  
+- **Bug Fixes**: Error messages for missing directory handles were updated to provide clearer guidance, changing "No directory selected." to "No workspace folder selected. Ask the user to open a folder first." This improves user experience by specifying the action needed.
+
+- **Feature Enhancements**: Worker agents now inherit additional properties from the manager agent, including `modelId`, `provider`, and `enableWebSearch`, ensuring consistent capabilities across agents.
+
+- **Design Decisions**: The commit emphasizes the importance of context in agent creation, ensuring that workers have the same operational context as their managers, which is crucial for maintaining functionality in tool interactions.
+
+- **Future Considerations**: Developers should be aware of the new properties inherited by worker agents and ensure that any changes to the manager agent's capabilities are reflected in the worker agents to maintain consistency. Additionally, the updated error handling should be considered when implementing new tools or features that rely on directory access.
