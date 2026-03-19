@@ -19,6 +19,8 @@ export interface MessageLink {
   toId: string;
   messageCount: number;
   lastMessage: string;
+  /** Full conversation exchanged over this link. */
+  messages: Array<{ sender: string; content: string }>;
 }
 
 interface AgentGraphProps {
@@ -41,6 +43,8 @@ const NODE_H = 60;
 const H_GAP = 72;
 const V_GAP = 80;
 const MARGIN = 48;
+/** Max characters shown per message in the link chat panel. */
+const MAX_MESSAGE_PREVIEW = 500;
 
 interface Pos { x: number; y: number }
 
@@ -118,6 +122,8 @@ export default function AgentGraph({
   const [positions, setPositions] = useState<Map<string, Pos>>(() => computeLayout(agents));
   const [connectMode, setConnectMode] = useState<ConnectMode>('none');
   const [pendingId, setPendingId] = useState<string | null>(null);
+  /** Index of the currently-selected message link (shown in the chat panel). */
+  const [selectedLinkIdx, setSelectedLinkIdx] = useState<number | null>(null);
 
   const dragging = useRef<{
     id: string;
@@ -150,6 +156,13 @@ export default function AgentGraph({
       setConnectMode('none');
     }
   }, [agents, pendingId]);
+
+  // Clear selected link when it becomes invalid
+  useEffect(() => {
+    if (selectedLinkIdx !== null && selectedLinkIdx >= messageLinks.length) {
+      setSelectedLinkIdx(null);
+    }
+  }, [messageLinks, selectedLinkIdx]);
 
   const handleMouseDown = (e: React.MouseEvent, id: string) => {
     if (connectMode !== 'none') return; // don't drag in connect mode
@@ -364,18 +377,35 @@ export default function AgentGraph({
             const mx = (from.x + to.x) / 2;
             const my = Math.min(from.y, to.y) - 40;
             const isManual = l.messageCount === 0;
-            const strokeColor = isManual ? '#6366f1' : '#10b981';
+            const isSelected = selectedLinkIdx === i;
+            const strokeColor = isSelected ? '#f59e0b' : isManual ? '#6366f1' : '#10b981';
             const markerId = isManual ? 'url(#arrow-manual)' : 'url(#arrow-msg)';
+            const fromAgent = agents.find(a => a.id === l.fromId);
+            const toAgent = agents.find(a => a.id === l.toId);
             return (
-              <g key={`msg-${i}`}>
+              <g key={`msg-${i}`} style={{ cursor: l.messages.length > 0 ? 'pointer' : 'default' }}>
+                {/* Invisible wider hit-area path for easier clicking */}
+                <path
+                  d={`M ${from.x} ${from.y} Q ${mx} ${my} ${to.x} ${to.y}`}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={14}
+                  onClick={e => {
+                    e.stopPropagation();
+                    if (l.messages.length > 0) {
+                      setSelectedLinkIdx(isSelected ? null : i);
+                    }
+                  }}
+                />
                 <path
                   d={`M ${from.x} ${from.y} Q ${mx} ${my} ${to.x} ${to.y}`}
                   fill="none"
                   stroke={strokeColor}
-                  strokeWidth={1.5}
+                  strokeWidth={isSelected ? 2.5 : 1.5}
                   strokeDasharray={isManual ? '3 4' : '5 3'}
                   markerEnd={markerId}
-                  opacity={0.7}
+                  opacity={isSelected ? 1 : 0.7}
+                  style={{ pointerEvents: 'none' }}
                 />
                 {/* Message count badge (only for active communication links) */}
                 {l.messageCount > 0 && (
@@ -384,13 +414,15 @@ export default function AgentGraph({
                     y={my - 4}
                     textAnchor="middle"
                     fontSize={10}
-                    fill="#10b981"
+                    fill={isSelected ? '#f59e0b' : '#10b981'}
                     opacity={0.85}
-                    style={{ fontFamily: 'monospace' }}
+                    style={{ fontFamily: 'monospace', pointerEvents: 'none' }}
                   >
                     {l.messageCount}×
                   </text>
                 )}
+                {/* Tooltip showing agent names */}
+                <title>{fromAgent?.name ?? '…'} → {toAgent?.name ?? '…'}{l.messages.length > 0 ? ' (click to view messages)' : ''}</title>
               </g>
             );
           })}
@@ -574,7 +606,60 @@ export default function AgentGraph({
           <span>Authoriser (AUTH)</span>
         </div>
         <p className="text-zinc-600 pt-1 border-t border-zinc-800">Drag nodes to rearrange</p>
+        <p className="text-zinc-600">Click a link to view messages</p>
       </div>
+
+      {/* ── Selected link message panel ───────────────────────────────── */}
+      {selectedLinkIdx !== null && messageLinks[selectedLinkIdx] && (() => {
+        const link = messageLinks[selectedLinkIdx];
+        const fromAgent = agents.find(a => a.id === link.fromId);
+        const toAgent = agents.find(a => a.id === link.toId);
+        return (
+          <div className="absolute top-3 right-3 w-80 max-h-[70vh] bg-zinc-900/95 border border-zinc-700 rounded-xl shadow-2xl backdrop-blur-sm flex flex-col z-20">
+            {/* Header */}
+            <div className="flex items-center justify-between px-3 py-2 border-b border-zinc-800 shrink-0">
+              <p className="text-xs font-semibold text-zinc-200 truncate">
+                {fromAgent?.name ?? '…'} → {toAgent?.name ?? '…'}
+                <span className="ml-2 text-zinc-500 font-normal">
+                  {link.messages.length} message{link.messages.length !== 1 ? 's' : ''}
+                </span>
+              </p>
+              <button
+                onClick={() => setSelectedLinkIdx(null)}
+                className="text-zinc-500 hover:text-zinc-200 ml-2 shrink-0 text-sm font-bold leading-none"
+              >
+                ✕
+              </button>
+            </div>
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {link.messages.length === 0 ? (
+                <p className="text-xs text-zinc-600 italic">No messages exchanged yet.</p>
+              ) : (
+                link.messages.map((m, mi) => {
+                  const isFrom = m.sender === fromAgent?.name;
+                  return (
+                    <div key={mi} className={`flex ${isFrom ? 'justify-start' : 'justify-end'}`}>
+                      <div
+                        className={`max-w-[90%] rounded-lg px-2.5 py-1.5 text-xs ${
+                          isFrom
+                            ? 'bg-zinc-800 text-zinc-300 border border-zinc-700'
+                            : 'bg-emerald-600/20 text-emerald-100 border border-emerald-500/20'
+                        }`}
+                      >
+                        <p className="font-semibold text-[10px] mb-0.5 opacity-70">{m.sender}</p>
+                        <p className="whitespace-pre-wrap break-words leading-relaxed">
+                          {m.content.length > MAX_MESSAGE_PREVIEW ? `${m.content.slice(0, MAX_MESSAGE_PREVIEW)}…` : m.content}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

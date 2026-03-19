@@ -93,8 +93,8 @@ const writeDocumentTool: FunctionDeclaration = {
       filename: {
         type: Type.STRING,
         description:
-          'Filename with extension, optionally with a subfolder path ' +
-          '(e.g., "report.txt", "docs/summary.docx", "output/results.pdf").',
+          'Filename with extension, optionally with a subfolder path relative to the workspace root ' +
+          '(e.g., "report.txt", "docs/summary.docx", "output/results.pdf"). Must NOT be an absolute path.',
       },
       content: {
         type: Type.STRING,
@@ -127,7 +127,7 @@ const writeFileTool: FunctionDeclaration = {
   parameters: {
     type: Type.OBJECT,
     properties: {
-      filename: { type: Type.STRING, description: 'The file path to write (e.g., "file.txt" or "reports/summary.txt")' },
+      filename: { type: Type.STRING, description: 'The file path to write, relative to the workspace root (e.g., "file.txt" or "reports/summary.txt"). Must NOT be an absolute path.' },
       content: { type: Type.STRING, description: 'The text content to write to the file' },
     },
     required: ['filename', 'content'],
@@ -485,6 +485,7 @@ function buildSystemInstruction(
       '  • NEVER write or generate code, Python scripts, shell commands, or any implementation yourself.',
       '  • NEVER use write_file, build_tool, or propose_python_script — you do not have these tools.',
       '  • ALWAYS delegate implementation, data processing, file writing, and computation to worker agents.',
+      '  • ALL file paths MUST be relative to the workspace root. NEVER use absolute paths, drive letters (e.g. "C:/"), or user-specific paths (e.g. "Users/…/Desktop/").',
       '  • Keep your own responses to coordination decisions, task breakdowns, and final summaries only.',
       '  • Format your final response with clear Markdown sections (## headings, bullet lists). Never paste raw code blocks or script output from workers — describe results in your own words.',
       '  • When presenting results: open with a brief executive summary, then list what each worker produced, then give your synthesis and recommendations.',
@@ -517,6 +518,7 @@ function buildSystemInstruction(
       'Use \'write_document\' to write .txt, .docx (Word), or .pdf files to the workspace.',
       'Use \'create_folder\' to create subfolders (e.g., "reports/2024") before writing files into them.',
       'File paths support subfolders: write to "reports/summary.txt" instead of just "summary.txt".',
+      'IMPORTANT: ALL file paths MUST be relative to the workspace root. NEVER use absolute paths, drive letters (e.g. "C:/"), or user-specific paths (e.g. "Users/…/Desktop/"). Only use simple relative paths like "report.txt" or "docs/summary.md".',
       'IMPORTANT: Do NOT narrate or describe tool calls in your text responses. Use the actual tool functions to perform actions. Your text responses should contain explanations, results, and summaries only.',
     );
   }

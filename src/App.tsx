@@ -275,7 +275,7 @@ export default function App() {
     setMessageLinks(prev => {
       const exists = prev.some(l => l.fromId === fromId && l.toId === toId);
       if (exists) return prev;
-      return [...prev, { fromId, toId, messageCount: 0, lastMessage: '' }];
+      return [...prev, { fromId, toId, messageCount: 0, lastMessage: '', messages: [] }];
     });
     // A user-drawn graph link also authorizes communication in that direction
     setConnectedLinks(prev => {
@@ -378,7 +378,7 @@ export default function App() {
       // Record spawn link
       setMessageLinks(prev => [
         ...prev,
-        { fromId: managerId, toId: newWorker.id, messageCount: 0, lastMessage: task },
+        { fromId: managerId, toId: newWorker.id, messageCount: 0, lastMessage: task, messages: [{ sender: managerAgent?.name ?? 'Manager', content: task }] },
       ]);
 
       // Immediately execute the initial task so the manager receives real results.
@@ -559,14 +559,18 @@ export default function App() {
         const existing = prev.find(
           l => l.fromId === managerId && l.toId === targetId && l.messageCount > 0,
         );
+        const newMsgs = [
+          { sender: managerName, content: message },
+          { sender: target.name, content: reply },
+        ];
         if (existing) {
           return prev.map(l =>
             l.fromId === managerId && l.toId === targetId
-              ? { ...l, messageCount: l.messageCount + 1, lastMessage: message }
+              ? { ...l, messageCount: l.messageCount + 1, lastMessage: message, messages: [...l.messages, ...newMsgs] }
               : l,
           );
         }
-        return [...prev, { fromId: managerId, toId: targetId, messageCount: 1, lastMessage: message }];
+        return [...prev, { fromId: managerId, toId: targetId, messageCount: 1, lastMessage: message, messages: newMsgs }];
       });
 
       return reply;
@@ -742,14 +746,18 @@ export default function App() {
       // Record message link for the graph
       setMessageLinks(prev => {
         const existing = prev.find(l => l.fromId === fromId && l.toId === targetId);
+        const newMsgs = [
+          { sender: fromName, content: message },
+          { sender: target.name, content: reply },
+        ];
         if (existing) {
           return prev.map(l =>
             l.fromId === fromId && l.toId === targetId
-              ? { ...l, messageCount: l.messageCount + 1, lastMessage: message }
+              ? { ...l, messageCount: l.messageCount + 1, lastMessage: message, messages: [...l.messages, ...newMsgs] }
               : l,
           );
         }
-        return [...prev, { fromId, toId: targetId, messageCount: 1, lastMessage: message }];
+        return [...prev, { fromId, toId: targetId, messageCount: 1, lastMessage: message, messages: newMsgs }];
       });
 
       return reply;
@@ -828,7 +836,7 @@ export default function App() {
       setMessageLinks(prev => {
         const exists = prev.some(l => l.fromId === fromAgentId && l.toId === toAgentId);
         if (exists) return prev;
-        return [...prev, { fromId: fromAgentId, toId: toAgentId, messageCount: 0, lastMessage: linkNote }];
+        return [...prev, { fromId: fromAgentId, toId: toAgentId, messageCount: 0, lastMessage: linkNote, messages: [] }];
       });
 
       return `Connected: ${fromAgent.name} → ${toAgent.name}. ${fromAgent.name} can now hand off work to ${toAgent.name} using handoff_to_agent.`;
