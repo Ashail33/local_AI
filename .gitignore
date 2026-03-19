@@ -1,5 +1,6 @@
 node_modules
 dist-electron/
 electron/main.js
+electron/preload.js
 dist/
 data/

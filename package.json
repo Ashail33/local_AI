@@ -13,7 +13,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "build-electron-src": "esbuild electron/main.ts --bundle --platform=node --external:electron --format=esm --outfile=electron/main.js",
+    "build-electron-src": "esbuild electron/main.ts --bundle --platform=node --external:electron --format=esm --outfile=electron/main.js && esbuild electron/preload.ts --bundle --platform=node --external:electron --format=cjs --outfile=electron/preload.js",
     "build-electron": "npm run build && npm run build-electron-src && electron-builder",
     "build-electron-all": "npm run build && npm run build-electron-src && electron-builder -mwl",
     "build-electron-mac": "npm run build && npm run build-electron-src && electron-builder --mac dmg",
