@@ -32,3 +32,36 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - Utilizes the built-in `GITHUB_TOKEN` for authentication, eliminating the need for external API keys.
 - The code review agent is designed to avoid infinite loops by skipping commits created by the workflow itself.
 - Future developers should be aware that the log file is auto-generated and should not be edited manually, as it is intended to reflect the history of changes in the repository.
+
+---
+
+## 2026-03-19 15:45:00 UTC — `651e91d`
+> Add functionality for communication lines between agents (#10)
+
+* Initial plan
+
+* Changes before error encountered
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+* Fix detach mode, add Remove Parent sidebar, parent indicator in toolbar
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+---------
+
+Co-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **File Changes**: The primary file modified is `src/App.tsx`, which has been updated to introduce new functionality for managing agent roles and communication lines between agents.
+
+- **New Features**:
+  - Added a new agent role: 'authoriser', allowing for a three-tier role system (worker, manager, authoriser).
+  - Implemented functionality for adding authoriser agents and managing their interactions with manager agents, including a recursive approval process.
+  - Introduced a system prompt editor for agents, enabling customization of task framing.
+
+- **Bug Fixes**: Fixed issues related to the detach mode and added a "Remove Parent" feature in the sidebar, which allows agents to be detached from their parent agents.
+
+- **Design Decisions**: Utilized a state management approach with hooks to manage agent states and interactions. The design supports a flexible role cycle, allowing agents to transition between roles dynamically.
+
+- **Future Considerations**: Developers should be aware of the new `recursive` property for manager agents and the associated approval workflow. The communication link management functions (`handleCreateLink`, `handleSetParent`, `handleRemoveParent`) are crucial for maintaining agent relationships and should be used consistently across the application.
