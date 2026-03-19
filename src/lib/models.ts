@@ -26,6 +26,8 @@ export const POPULAR_OLLAMA_MODELS: Array<{ id: string; name: string; size: stri
 const OLLAMA_URL_KEY = 'ollamaUrl';
 const OLLAMA_URL_DEFAULT = 'http://localhost:11434';
 
+const GEMINI_API_KEY_STORAGE_KEY = 'geminiApiKey';
+
 /**
  * Get the Ollama base URL. Users can change this in the app settings to point
  * at a remote EC2 instance, e.g. "http://1.2.3.4:11434".
@@ -44,6 +46,31 @@ export function setOllamaUrl(url: string): void {
     localStorage.setItem(OLLAMA_URL_KEY, url.replace(/\/+$/, ''));
   } catch {
     // localStorage unavailable (e.g. private browsing) – ignore
+  }
+}
+
+/**
+ * Get the Gemini API key. Returns the key stored by the user at runtime,
+ * falling back to the build-time environment variable if set.
+ */
+export function getGeminiApiKey(): string {
+  try {
+    return localStorage.getItem(GEMINI_API_KEY_STORAGE_KEY) || process.env.GEMINI_API_KEY || '';
+  } catch {
+    return process.env.GEMINI_API_KEY || '';
+  }
+}
+
+/** Persist the Gemini API key entered by the user. */
+export function setGeminiApiKey(key: string): void {
+  try {
+    if (key.trim()) {
+      localStorage.setItem(GEMINI_API_KEY_STORAGE_KEY, key.trim());
+    } else {
+      localStorage.removeItem(GEMINI_API_KEY_STORAGE_KEY);
+    }
+  } catch {
+    // localStorage unavailable – ignore
   }
 }
 

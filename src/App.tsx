@@ -12,6 +12,7 @@ import type { AgentRef } from './lib/ai';
 import {
   listOllamaModels, pullOllamaModel, testOllamaConnection,
   getOllamaUrl, setOllamaUrl,
+  getGeminiApiKey, setGeminiApiKey,
   DEFAULT_GEMINI_MODELS, POPULAR_OLLAMA_MODELS,
   type Model, type ModelProvider,
 } from './lib/models';
@@ -90,6 +91,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [ollamaUrlInput, setOllamaUrlInput] = useState(getOllamaUrl);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
+
+  // Gemini API key
+  const [geminiApiKeyInput, setGeminiApiKeyInput] = useState(getGeminiApiKey);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const tabInputRef = useRef<HTMLInputElement>(null);
@@ -463,6 +467,7 @@ export default function App() {
 
   const handleSaveSettings = async () => {
     setOllamaUrl(ollamaUrlInput);
+    setGeminiApiKey(geminiApiKeyInput);
     setConnectionStatus('idle');
     setShowSettings(false);
     const updated = await listOllamaModels();
@@ -471,6 +476,7 @@ export default function App() {
 
   const handleOpenSettings = () => {
     setOllamaUrlInput(getOllamaUrl());
+    setGeminiApiKeyInput(getGeminiApiKey());
     setConnectionStatus('idle');
     setShowSettings(true);
   };
@@ -585,7 +591,7 @@ export default function App() {
         {/* Settings button */}
         <button
           onClick={handleOpenSettings}
-          title="Ollama settings"
+          title="Settings"
           className="px-3 py-2 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors shrink-0"
         >
           <Settings className="w-4 h-4" />
@@ -794,6 +800,23 @@ export default function App() {
               </button>
             </div>
 
+            {/* API key warning */}
+            {activeAgent.provider === 'gemini' && !getGeminiApiKey() && (
+              <div className="mx-5 mt-3 flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2.5 text-xs text-amber-300">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>
+                  No Gemini API key configured.{' '}
+                  <button
+                    onClick={handleOpenSettings}
+                    className="underline hover:text-amber-100 transition-colors"
+                  >
+                    Open Settings
+                  </button>{' '}
+                  to enter your key, or switch to a local Ollama model.
+                </span>
+              </div>
+            )}
+
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-5 space-y-5">
               {activeAgent.messages.map((msg, i) => (
@@ -929,10 +952,15 @@ export default function App() {
 
             <p className="text-xs text-zinc-400 mb-4">
               Requires{' '}
-              <a href="https://ollama.com" target="_blank" rel="noreferrer" className="text-emerald-400 hover:underline">
+              <a href="https://ollama.com/download" target="_blank" rel="noreferrer" className="text-emerald-400 hover:underline">
                 Ollama
               </a>{' '}
-              to be running locally or inside Docker. Models are stored in the Ollama volume.
+              to be running locally or inside Docker. After installing Ollama, use the Download button next to each model below to pull it — models are stored in the Ollama data directory.
+              If Ollama is not yet set up, open{' '}
+              <button onClick={() => { setShowDownloadModal(false); handleOpenSettings(); }} className="text-emerald-400 hover:underline">
+                Settings
+              </button>{' '}
+              for setup instructions.
             </p>
 
             <div className="space-y-2 max-h-64 overflow-y-auto">
@@ -968,24 +996,63 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Ollama settings modal ──────────────────────────────────────────── */}
+      {/* ── Settings modal ────────────────────────────────────────────────── */}
       {showSettings && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md shadow-2xl">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-base font-semibold flex items-center gap-2">
                 <Settings className="w-4 h-4 text-emerald-400" />
-                Ollama Settings
+                Settings
               </h2>
               <button onClick={() => setShowSettings(false)} className="text-zinc-400 hover:text-white">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="text-xs text-zinc-400 mb-4">
-              Point the app at a local or remote Ollama instance — e.g. an EC2 server
-              running <code className="text-emerald-400">docker compose up -d</code> with the
-              provided <code className="text-emerald-400">docker-compose.yml</code>.
+            {/* Gemini API Key section */}
+            <p className="text-xs font-semibold text-zinc-300 uppercase tracking-wider mb-2">
+              Gemini API Key
+            </p>
+            <p className="text-xs text-zinc-400 mb-3">
+              Required for cloud Gemini models. Get your free key at{' '}
+              <a
+                href="https://aistudio.google.com/app/apikey"
+                target="_blank"
+                rel="noreferrer"
+                className="text-emerald-400 hover:underline"
+              >
+                aistudio.google.com
+              </a>
+              . The key is stored only in your browser's local storage — avoid using it on shared devices.
+            </p>
+            <input
+              type="password"
+              id="gemini-api-key"
+              aria-label="Gemini API key"
+              value={geminiApiKeyInput}
+              onChange={e => setGeminiApiKeyInput(e.target.value)}
+              placeholder="AIza…"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 mb-5 font-mono"
+            />
+
+            <hr className="border-zinc-800 mb-5" />
+
+            {/* Ollama section */}
+            <p className="text-xs font-semibold text-zinc-300 uppercase tracking-wider mb-2">
+              Ollama (Local Models)
+            </p>
+            <p className="text-xs text-zinc-400 mb-3">
+              Point the app at a local or remote Ollama instance.{' '}
+              <a
+                href="https://ollama.com/download"
+                target="_blank"
+                rel="noreferrer"
+                className="text-emerald-400 hover:underline"
+              >
+                Download Ollama
+              </a>{' '}
+              and install it, then models can be pulled from the model picker.
             </p>
 
             <label className="block text-xs font-medium text-zinc-400 mb-1">Ollama URL</label>
@@ -1017,8 +1084,8 @@ export default function App() {
               </p>
             )}
 
-            <div className="bg-zinc-800/60 rounded-lg p-3 mb-4 text-xs text-zinc-400 space-y-1">
-              <p className="font-semibold text-zinc-300">Quick-start on any machine:</p>
+            <div className="bg-zinc-800/60 rounded-lg p-3 mb-5 text-xs text-zinc-400 space-y-1">
+              <p className="font-semibold text-zinc-300">Quick-start with Docker:</p>
               <p>1. Install Docker, then run:</p>
               <pre className="text-emerald-400 mt-1">docker compose up -d</pre>
               <p className="mt-1">For NVIDIA GPU (EC2):</p>
