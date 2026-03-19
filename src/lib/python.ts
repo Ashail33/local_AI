@@ -87,25 +87,3 @@ await __main__()
     throw err;
   }
 }
-
-export async function runPythonScript(script: string, pyodide: any, logCallback: (msg: string) => void) {
-  logCallback("System: Executing script...");
-  try {
-    // We wrap the user script in an async function so they can use top-level await
-    // for our async read_file/write_file helpers.
-    const wrappedScript = `
-import asyncio
-import micropip
-
-async def __main__():
-${script.split('\n').map(line => '    ' + line).join('\n')}
-
-await __main__()
-`;
-    await pyodide.runPythonAsync(wrappedScript);
-    logCallback("System: Script execution completed successfully.");
-  } catch (err) {
-    logCallback(`System Error: ${err}`);
-    throw err;
-  }
-}
