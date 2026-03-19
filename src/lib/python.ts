@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { readFile, writeFile, writeBinaryFile, createFolder } from './fs';
+import { readFile, writeFile, writeBinaryFile, createFolder, base64ToBytes } from './fs';
 
 export async function initPython(dirHandle: FileSystemDirectoryHandle, logCallback: (msg: string) => void) {
   if (typeof window.loadPyodide !== 'function') {
@@ -30,10 +30,7 @@ export async function initPython(dirHandle: FileSystemDirectoryHandle, logCallba
 
   /** Write binary data encoded as a base64 string to a workspace file. */
   pyodide.globals.set("write_binary_file_js", async (filename: string, b64content: string) => {
-    const binary = atob(b64content);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    await writeBinaryFile(dirHandle, filename, bytes);
+    await writeBinaryFile(dirHandle, filename, base64ToBytes(b64content));
   });
 
   /** Create a subfolder (or nested path) inside the workspace. */

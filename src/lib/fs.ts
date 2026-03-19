@@ -22,10 +22,11 @@ async function getOrCreateDir(
   return dir;
 }
 
-/** Split a file path into { dirParts, filename }. */
+/** Split a file path into { dirParts, filename }. Throws on empty or invalid paths. */
 function splitPath(filePath: string): { dirParts: string[]; filename: string } {
   const parts = filePath.split('/').filter(Boolean);
-  const filename = parts.pop() ?? filePath;
+  if (parts.length === 0) throw new Error(`Invalid file path: "${filePath}". Path must not be empty.`);
+  const filename = parts.pop()!;
   return { dirParts: parts, filename };
 }
 
@@ -100,9 +101,16 @@ export async function writeFile(
 }
 
 /**
- * Write binary data (Uint8Array) to a file in the workspace.
- * Supports subfolder paths. Used for .docx, .pdf, and other binary formats.
+ * Decode a base64 string to a Uint8Array.
+ * Shared utility used by both the Pyodide bridge (python.ts) and the auto-run
+ * script callback (App.tsx) to avoid duplicated inline decode loops.
  */
+export function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
 export async function writeBinaryFile(
   dirHandle: FileSystemDirectoryHandle,
   filePath: string,

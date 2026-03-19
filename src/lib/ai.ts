@@ -9,9 +9,17 @@ function getAiClient(): GoogleGenAI {
   return new GoogleGenAI({ apiKey: getGeminiApiKey() });
 }
 
+/** Encode a string to base64 in a UTF-8 safe way (no deprecated unescape). */
+function toBase64(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
 /** Generate a Python script that creates a Word (.docx) document via python-docx. */
 function buildDocxScript(filename: string, content: string): string {
-  const b64 = btoa(unescape(encodeURIComponent(content)));
+  const b64 = toBase64(content);
   return `await micropip.install("python-docx")
 from docx import Document
 import io, base64
@@ -29,7 +37,7 @@ await write_binary_file("${filename}", buf.getvalue())
 
 /** Generate a Python script that creates a PDF document via reportlab. */
 function buildPdfScript(filename: string, content: string): string {
-  const b64 = btoa(unescape(encodeURIComponent(content)));
+  const b64 = toBase64(content);
   return `await micropip.install("reportlab")
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -43,7 +51,8 @@ styles = getSampleStyleSheet()
 story = []
 for line in content.split("\\n"):
     if line.strip():
-        story.append(Paragraph(line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), styles["Normal"]))
+        safe = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
+        story.append(Paragraph(safe, styles["Normal"]))
     else:
         story.append(Spacer(1, 12))
 doc.build(story)
@@ -100,95 +109,105 @@ const writeDocumentTool: FunctionDeclaration = {
   },
 };
 
+const readFileTool: FunctionDeclaration = {
+  name: 'read_file',
+  description: "Read the contents of a text-based file from the user's local workspace folder.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      filename: { type: Type.STRING, description: 'The name of the file to read (e.g., data.txt). Supports subfolder paths like "reports/data.csv".' },
+    },
+    required: ['filename'],
+  },
+};
+
+const writeFileTool: FunctionDeclaration = {
+  name: 'write_file',
+  description: "Write text content to a file in the user's local workspace folder. Supports subfolder paths like \"reports/summary.txt\" — intermediate folders are created automatically.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      filename: { type: Type.STRING, description: 'The file path to write (e.g., "file.txt" or "reports/summary.txt")' },
+      content: { type: Type.STRING, description: 'The text content to write to the file' },
+    },
+    required: ['filename', 'content'],
+  },
+};
+
+const createDocumentTool: FunctionDeclaration = {
+  name: 'create_document',
+  description:
+    'Write a well-structured, human-readable document to a file in the workspace. ' +
+    'Use this for reports, specifications, plans, analyses, READMEs, meeting notes, and any ' +
+    'content intended for people to read — not just raw code files.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      filename: {
+        type: Type.STRING,
+        description: 'The filename including extension (e.g., report.md, spec.txt, README.md)',
+      },
+      content: {
+        type: Type.STRING,
+        description: 'The full document content. Markdown formatting is supported and encouraged.',
+      },
+      document_type: {
+        type: Type.STRING,
+        description:
+          'The kind of document: report | specification | readme | analysis | plan | notes | other',
+      },
+    },
+    required: ['filename', 'content'],
+  },
+};
+
+const buildToolTool: FunctionDeclaration = {
+  name: 'build_tool',
+  description:
+    'Create a reusable Python tool script and save it to the workspace. ' +
+    'Use this to build utilities, data processors, automation helpers, or any function library ' +
+    'that other agents (or the user) can run later via propose_python_script.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      tool_name: {
+        type: Type.STRING,
+        description:
+          'The tool filename without extension (e.g., "csv_parser" saves as csv_parser.py)',
+      },
+      description: {
+        type: Type.STRING,
+        description: 'What the tool does, its inputs, and how to use it.',
+      },
+      script: {
+        type: Type.STRING,
+        description: 'The Python source code, including all function and class definitions.',
+      },
+    },
+    required: ['tool_name', 'description', 'script'],
+  },
+};
+
+const proposePythonScriptTool: FunctionDeclaration = {
+  name: 'propose_python_script',
+  description:
+    'Propose a Python script to automate a task, process data, or edit complex files (Excel, Word, PDF). The script will be shown to the user for review before execution.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      script: { type: Type.STRING, description: 'The Python code to execute.' },
+      explanation: { type: Type.STRING, description: 'Explanation of what the script does.' },
+    },
+    required: ['script', 'explanation'],
+  },
+};
+
 const baseToolDeclarations: FunctionDeclaration[] = [
-  {
-    name: 'read_file',
-    description: "Read the contents of a text-based file from the user's local workspace folder.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        filename: { type: Type.STRING, description: 'The name of the file to read (e.g., data.txt)' },
-      },
-      required: ['filename'],
-    },
-  },
-  {
-    name: 'write_file',
-    description: "Write text content to a file in the user's local workspace folder.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        filename: { type: Type.STRING, description: 'The name of the file to write' },
-        content: { type: Type.STRING, description: 'The text content to write to the file' },
-      },
-      required: ['filename', 'content'],
-    },
-  },
-  {
-    name: 'create_document',
-    description:
-      'Write a well-structured, human-readable document to a file in the workspace. ' +
-      'Use this for reports, specifications, plans, analyses, READMEs, meeting notes, and any ' +
-      'content intended for people to read — not just raw code files.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        filename: {
-          type: Type.STRING,
-          description: 'The filename including extension (e.g., report.md, spec.txt, README.md)',
-        },
-        content: {
-          type: Type.STRING,
-          description: 'The full document content. Markdown formatting is supported and encouraged.',
-        },
-        document_type: {
-          type: Type.STRING,
-          description:
-            'The kind of document: report | specification | readme | analysis | plan | notes | other',
-        },
-      },
-      required: ['filename', 'content'],
-    },
-  },
-  {
-    name: 'build_tool',
-    description:
-      'Create a reusable Python tool script and save it to the workspace. ' +
-      'Use this to build utilities, data processors, automation helpers, or any function library ' +
-      'that other agents (or the user) can run later via propose_python_script.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        tool_name: {
-          type: Type.STRING,
-          description:
-            'The tool filename without extension (e.g., "csv_parser" saves as csv_parser.py)',
-        },
-        description: {
-          type: Type.STRING,
-          description: 'What the tool does, its inputs, and how to use it.',
-        },
-        script: {
-          type: Type.STRING,
-          description: 'The Python source code, including all function and class definitions.',
-        },
-      },
-      required: ['tool_name', 'description', 'script'],
-    },
-  },
-  {
-    name: 'propose_python_script',
-    description:
-      'Propose a Python script to automate a task, process data, or edit complex files (Excel, Word, PDF). The script will be shown to the user for review before execution.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        script: { type: Type.STRING, description: 'The Python code to execute.' },
-        explanation: { type: Type.STRING, description: 'Explanation of what the script does.' },
-      },
-      required: ['script', 'explanation'],
-    },
-  },
+  readFileTool,
+  writeFileTool,
+  createDocumentTool,
+  buildToolTool,
+  proposePythonScriptTool,
   createFolderTool,
   writeDocumentTool,
 ];
@@ -200,9 +219,9 @@ const baseToolDeclarations: FunctionDeclaration[] = [
  * implementation work must be delegated to worker agents.
  */
 const managerBaseToolDeclarations: FunctionDeclaration[] = [
-  baseToolDeclarations[0], // read_file
-  baseToolDeclarations[2], // create_document (for final summaries / reports only)
-  createFolderTool,        // managers can set up folder structure
+  readFileTool,
+  createDocumentTool,
+  createFolderTool,
 ];
 
 const webSearchTool: FunctionDeclaration = {

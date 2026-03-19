@@ -5,7 +5,7 @@ import {
   AlertCircle, Plus, X, Edit2, Globe, ChevronDown, Download, Settings,
   Network, Crown, Shield, RefreshCw, MessageSquare,
 } from 'lucide-react';
-import { pickDirectory, listFiles, writeBinaryFile, readFile as readFileFs, writeFile as writeFileFs, createFolder as createFolderFs } from './lib/fs';
+import { pickDirectory, listFiles, writeBinaryFile, base64ToBytes, readFile as readFileFs, writeFile as writeFileFs, createFolder as createFolderFs } from './lib/fs';
 import { initPython, runPythonScript } from './lib/python';
 import { processChatTurn } from './lib/ai';
 import type { AgentRef } from './lib/ai';
@@ -695,10 +695,7 @@ export default function App() {
           py.globals.set('read_file_js', async (f: string) => readFileFs(agent.dirHandle!, f));
           py.globals.set('write_file_js', async (f: string, c: string) => writeFileFs(agent.dirHandle!, f, c));
           py.globals.set('write_binary_file_js', async (f: string, b64: string) => {
-            const binary = atob(b64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            await writeBinaryFile(agent.dirHandle!, f, bytes);
+            await writeBinaryFile(agent.dirHandle!, f, base64ToBytes(b64));
           });
           py.globals.set('create_folder_js', async (p: string) => createFolderFs(agent.dirHandle!, p));
         }
