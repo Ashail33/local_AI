@@ -193,3 +193,22 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - No new features were introduced; the change is purely a bug fix aimed at ensuring successful builds.
 - The design pattern of wrapping user scripts in an async function for top-level await usage was previously employed but is no longer applicable due to the function's removal.
 - Future developers should be aware of the potential for duplicate exports in the codebase and ensure that function names are unique to prevent similar build issues.
+
+---
+
+## 2026-03-19 18:20:57 UTC — `88eed48`
+> Fix manager agent stuck loop: auto-execute worker tasks on spawn
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **Files Changed**: Modifications were made to `src/App.tsx` and `src/lib/ai.ts` to address the issue of the manager agent getting stuck in a loop when spawning worker agents.
+  
+- **New Feature**: The `buildSpawnAgentCallback` function now immediately executes the initial task of a newly spawned worker agent, returning the worker's reference along with its initial response. This eliminates the need for a separate call to `message_agent` to start the worker's task.
+
+- **Bug Fix**: The commit resolves the issue of the manager agent being stuck by ensuring that the initial task is executed right after the worker is spawned, preventing the need for additional messaging that could lead to infinite loops.
+
+- **Design Decisions**: Introduced a safety guard in `processChatTurn` to limit the number of tool iterations to 30, preventing unbounded loops. This is crucial for maintaining application stability.
+
+- **State Management**: The state of the agents is updated to reflect loading status and terminal logs during task execution, ensuring that the UI can provide real-time feedback on the worker's progress.
+
+- **Future Considerations**: Developers should be aware of the new `initialResponse` property in the `AgentRef` interface, which holds the worker's response to its initial task. This change may affect how agents are managed and communicated with in the application.
