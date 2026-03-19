@@ -2,6 +2,10 @@
 import { readFile, writeFile } from './fs';
 
 export async function initPython(dirHandle: FileSystemDirectoryHandle, logCallback: (msg: string) => void) {
+  if (typeof window.loadPyodide !== 'function') {
+    throw new Error('Pyodide is still loading or unavailable. Please wait a moment and try again. If the problem persists, check your internet connection and reload the app.');
+  }
+
   if (!window.pyodide) {
     logCallback("System: Initializing Python environment (Pyodide)... This may take a moment.");
     window.pyodide = await window.loadPyodide({
