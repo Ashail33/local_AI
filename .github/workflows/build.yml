@@ -31,6 +31,9 @@ jobs:
     - name: Build web app
       run: npm run build
 
+    - name: Compile Electron main process
+      run: npm run build-electron-src
+
     - name: Build DMG (macOS)
       run: npx electron-builder --mac dmg zip --publish never
       env:
@@ -67,6 +70,9 @@ jobs:
     - name: Build web app
       run: npm run build
 
+    - name: Compile Electron main process
+      run: npm run build-electron-src
+
     - name: Build EXE (Windows)
       run: npx electron-builder --win nsis --publish never
 
@@ -98,6 +104,9 @@ jobs:
 
     - name: Build web app
       run: npm run build
+
+    - name: Compile Electron main process
+      run: npm run build-electron-src
 
     - name: Build Linux packages
       run: npx electron-builder --linux deb AppImage --publish never
