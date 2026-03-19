@@ -3,7 +3,7 @@ import Markdown from 'react-markdown';
 import {
   FolderOpen, FileText, Send, Play, Terminal, CheckCircle2,
   AlertCircle, Plus, X, Edit2, Globe, ChevronDown, Download, Settings,
-  Network, Crown,
+  Network, Crown, Shield, RefreshCw, MessageSquare,
 } from 'lucide-react';
 import { pickDirectory, listFiles } from './lib/fs';
 import { initPython, runPythonScript } from './lib/python';
@@ -50,7 +50,7 @@ interface Agent {
   id: string;
   name: string;
   /** Manager agents can spawn workers and delegate tasks to them. */
-  role: 'manager' | 'worker';
+  role: 'manager' | 'worker' | 'authoriser';
   /** ID of the manager that spawned this agent, or null for root agents. */
   parentId: string | null;
   modelId: string;
@@ -63,6 +63,10 @@ interface Agent {
   proposedScript: { code: string; explanation: string } | null;
   isLoading: boolean;
   input: string;
+  /** Custom user-defined task framing / system prompt for this agent. */
+  systemPrompt: string;
+  /** When true (manager only), agent keeps working until authoriser approves. */
+  recursive: boolean;
 }
 
 let agentCounter = 1;
@@ -89,6 +93,8 @@ function createAgent(name?: string, role: Agent['role'] = 'worker', parentId: st
     proposedScript: null,
     isLoading: false,
     input: '',
+    systemPrompt: '',
+    recursive: false,
   };
 }
 
@@ -110,6 +116,9 @@ export default function App() {
   const [messageLinks, setMessageLinks] = useState<MessageLink[]>([]);
   /** Toggle between the chat view and the agent-topology graph view. */
   const [showGraphView, setShowGraphView] = useState(false);
+  /** System prompt editor modal state. */
+  const [showPromptModal, setShowPromptModal] = useState(false);
+  const [promptDraft, setPromptDraft] = useState('');
 
   // Ollama settings
   const [showSettings, setShowSettings] = useState(false);
@@ -192,6 +201,20 @@ export default function App() {
     setShowGraphView(false);
   };
 
+  const addManager = () => {
+    const agent = createAgent(undefined, 'manager', null);
+    setAgents(prev => [...prev, agent]);
+    setActiveAgentId(agent.id);
+    setShowGraphView(false);
+  };
+
+  const addAuthoriser = () => {
+    const agent = createAgent(undefined, 'authoriser', null);
+    setAgents(prev => [...prev, agent]);
+    setActiveAgentId(agent.id);
+    setShowGraphView(false);
+  };
+
   const removeAgent = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setAgents(prev => {
@@ -220,6 +243,41 @@ export default function App() {
       updateAgent(editingTabId, { name: editingTabName.trim() });
     }
     setEditingTabId(null);
+  };
+
+  // ── Prompt editor ────────────────────────────────────────────────────────────
+
+  const handleOpenPromptEditor = (agentId?: string) => {
+    const agent = agentsRef.current.find(a => a.id === (agentId ?? activeAgent.id));
+    setPromptDraft(agent?.systemPrompt ?? '');
+    setShowPromptModal(true);
+  };
+
+  const handleSavePrompt = () => {
+    updateAgent(activeAgent.id, { systemPrompt: promptDraft });
+    setShowPromptModal(false);
+  };
+
+  // ── Graph connection handlers ────────────────────────────────────────────────
+
+  /** Create a manual message link between two agents in the graph. */
+  const handleCreateLink = (fromId: string, toId: string) => {
+    setMessageLinks(prev => {
+      const exists = prev.some(l => l.fromId === fromId && l.toId === toId);
+      if (exists) return prev;
+      return [...prev, { fromId, toId, messageCount: 0, lastMessage: '' }];
+    });
+  };
+
+  /** Set the parent-child hierarchy between two agents. */
+  const handleSetParent = (childId: string, parentId: string) => {
+    if (childId === parentId) return;
+    updateAgent(childId, { parentId });
+  };
+
+  /** Remove an agent's parent, making it a root node. */
+  const handleRemoveParent = (agentId: string) => {
+    updateAgent(agentId, { parentId: null });
   };
 
   // ── Workspace / files ───────────────────────────────────────────────────────
@@ -377,6 +435,68 @@ export default function App() {
       return reply;
     };
 
+  /**
+   * Called when a recursive manager agent invokes the request_signoff tool.
+   * Runs the authoriser agent (if any) and returns APPROVED/REJECTED.
+   */
+  const buildRequestSignoffCallback = (managerId: string) =>
+    async (summary: string): Promise<string> => {
+      const authoriser = agentsRef.current.find(a => a.role === 'authoriser');
+      if (!authoriser) {
+        return 'APPROVED: No authoriser agent configured — task marked as complete.';
+      }
+
+      setAgents(prev => prev.map(a => a.id === authoriser.id ? { ...a, isLoading: true } : a));
+
+      const authoriserLog = (msg: string) =>
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === authoriser.id ? { ...a, terminalLogs: [...a.terminalLogs, msg] } : a,
+          ),
+        );
+
+      try {
+        const response = await processChatTurn(
+          `Please review this work summary and decide whether to APPROVE or REJECT it:\n\n${summary}\n\n` +
+          'Respond with either "APPROVED: <brief comment>" or "REJECTED: <specific feedback about what needs to be improved>".',
+          authoriser.messages.filter(m => m.role !== 'system'),
+          authoriser.dirHandle,
+          () => {},
+          authoriserLog,
+          {
+            modelId: authoriser.modelId,
+            provider: authoriser.provider,
+            agentName: authoriser.name,
+            customSystemPrompt: authoriser.systemPrompt,
+          },
+        );
+
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === authoriser.id
+              ? {
+                  ...a,
+                  isLoading: false,
+                  messages: [
+                    ...a.messages,
+                    {
+                      role: 'user' as const,
+                      content: `[Sign-off request from manager ${managerId}]: ${summary}`,
+                    },
+                    response as Message,
+                  ],
+                }
+              : a,
+          ),
+        );
+
+        return response.content;
+      } catch (err: any) {
+        setAgents(prev => prev.map(a => a.id === authoriser.id ? { ...a, isLoading: false } : a));
+        return `APPROVED: Authoriser encountered an error — auto-approving (${err.message}).`;
+      }
+    };
+
   // ── Chat ────────────────────────────────────────────────────────────────────
 
   const handleSendMessage = async (agentId: string) => {
@@ -416,11 +536,17 @@ export default function App() {
           enableWebSearch: agent.enableWebSearch,
           agentName: agent.name,
           isManager: agent.role === 'manager',
+          isRecursive: agent.role === 'manager' && agent.recursive,
+          customSystemPrompt: agent.systemPrompt,
           spawnedAgents,
           onSpawnAgent: agent.role === 'manager' ? buildSpawnAgentCallback(agentId) : undefined,
           onMessageAgent:
             agent.role === 'manager'
               ? buildMessageAgentCallback(agentId, agent.name)
+              : undefined,
+          onRequestSignoff:
+            agent.role === 'manager' && agent.recursive
+              ? buildRequestSignoffCallback(agentId)
               : undefined,
         },
       );
@@ -576,6 +702,9 @@ export default function App() {
     }, {}),
   );
 
+  /** Fast O(1) agent lookup used in render. */
+  const agentById = new Map(agents.map(a => [a.id, a]));
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -598,6 +727,9 @@ export default function App() {
             >
               {agent.role === 'manager' && (
                 <Crown className="w-3 h-3 text-indigo-400 shrink-0" />
+              )}
+              {agent.role === 'authoriser' && (
+                <Shield className="w-3 h-3 text-amber-400 shrink-0" />
               )}
               {editingTabId === agent.id ? (
                 <input
@@ -633,11 +765,27 @@ export default function App() {
 
           <button
             onClick={addAgent}
-            title="New Agent"
+            title="New Worker Agent"
             className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800 rounded-md text-sm transition-colors shrink-0"
           >
             <Plus className="w-4 h-4" />
             <span className="text-xs">New Agent</span>
+          </button>
+          <button
+            onClick={addManager}
+            title="New Manager Agent"
+            className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-indigo-400 hover:bg-zinc-800 rounded-md text-sm transition-colors shrink-0"
+          >
+            <Crown className="w-3.5 h-3.5" />
+            <span className="text-xs">Manager</span>
+          </button>
+          <button
+            onClick={addAuthoriser}
+            title="New Authoriser Agent"
+            className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-amber-400 hover:bg-zinc-800 rounded-md text-sm transition-colors shrink-0"
+          >
+            <Shield className="w-3.5 h-3.5" />
+            <span className="text-xs">Authoriser</span>
           </button>
         </div>
 
@@ -681,15 +829,74 @@ export default function App() {
           </div>
 
           {showGraphView ? (
-            <div className="p-3 text-xs text-zinc-500 space-y-2">
+            <div className="p-3 text-xs text-zinc-500 space-y-2 overflow-y-auto flex-1">
               <p className="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">
                 Agent Network
               </p>
               <p>{agents.length} agent{agents.length !== 1 ? 's' : ''}</p>
               <p>{agents.filter(a => a.role === 'manager').length} manager{agents.filter(a => a.role === 'manager').length !== 1 ? 's' : ''}</p>
-              <p>{dedupedMessageLinks.filter(l => l.messageCount > 0).length} communication link{dedupedMessageLinks.filter(l => l.messageCount > 0).length !== 1 ? 's' : ''}</p>
+              <p>{agents.filter(a => a.role === 'authoriser').length} authoriser{agents.filter(a => a.role === 'authoriser').length !== 1 ? 's' : ''}</p>
+              <p>{dedupedMessageLinks.filter(l => l.messageCount > 0).length} active link{dedupedMessageLinks.filter(l => l.messageCount > 0).length !== 1 ? 's' : ''}</p>
               <hr className="border-zinc-800 my-1" />
-              <p className="text-zinc-600">Click a node to open that agent's chat.</p>
+              <p className="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">
+                Add Agent
+              </p>
+              <button
+                onClick={addAgent}
+                className="w-full text-left flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
+              >
+                <Plus className="w-3 h-3" /> Worker
+              </button>
+              <button
+                onClick={addManager}
+                className="w-full text-left flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-indigo-300 transition-colors"
+              >
+                <Crown className="w-3 h-3" /> Add Manager
+              </button>
+              <button
+                onClick={addAuthoriser}
+                className="w-full text-left flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-amber-300 transition-colors"
+              >
+                <Shield className="w-3 h-3" /> Add Authoriser
+              </button>
+              {/* Remove Parent section: show agents that have a parent */}
+              {agents.some(a => a.parentId !== null) && (
+                <>
+                  <hr className="border-zinc-800 my-1" />
+                  <p className="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">
+                    Remove Parent
+                  </p>
+                  {agents
+                    .filter(a => a.parentId !== null)
+                    .map(a => {
+                      const parent = agentById.get(a.parentId!);
+                      return (
+                        <button
+                          key={a.id}
+                          onClick={() => handleRemoveParent(a.id)}
+                          title={`Remove parent link: ${a.name} → ${parent?.name ?? 'unknown'}`}
+                          className="w-full text-left flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-zinc-800 hover:bg-red-900/40 text-zinc-400 hover:text-red-300 transition-colors"
+                        >
+                          <X className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{a.name}</span>
+                        </button>
+                      );
+                    })}
+                </>
+              )}
+              <hr className="border-zinc-800 my-1" />
+              <p className="text-zinc-600 leading-relaxed">
+                Use <strong className="text-zinc-500">🔗 Link</strong> to draw a manual communication line.
+              </p>
+              <p className="text-zinc-600 leading-relaxed">
+                Use <strong className="text-zinc-500">⬆ Set Parent</strong> to assign hierarchy.
+              </p>
+              <p className="text-zinc-600 leading-relaxed">
+                Use <strong className="text-zinc-500">✂ Detach</strong> to remove a parent link.
+              </p>
+              <p className="text-zinc-600 leading-relaxed">
+                Click a node to open that agent's chat.
+              </p>
             </div>
           ) : (
             <div className="p-3 flex-1 overflow-y-auto">
@@ -738,6 +945,7 @@ export default function App() {
               modelId: a.modelId,
               parentId: a.parentId,
               isLoading: a.isLoading,
+              recursive: a.recursive,
             }))}
             activeAgentId={activeAgentId}
             messageLinks={dedupedMessageLinks}
@@ -745,40 +953,109 @@ export default function App() {
               setActiveAgentId(id);
               setShowGraphView(false);
             }}
+            onCreateLink={handleCreateLink}
+            onSetParent={handleSetParent}
+            onRemoveParent={handleRemoveParent}
           />
         ) : (
           /* ── Chat View ───────────────────────────────────────────────── */
           <div className="flex-1 flex flex-col min-w-0">
 
             {/* Agent toolbar */}
-            <div className="flex items-center gap-3 px-4 py-2 border-b border-zinc-800 bg-zinc-900/50 shrink-0">
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-zinc-800 bg-zinc-900/50 shrink-0 flex-wrap">
               <span className="text-xs text-zinc-500 font-medium truncate max-w-[8rem] flex items-center gap-1">
                 {activeAgent.role === 'manager' && (
                   <Crown className="w-3 h-3 text-indigo-400 shrink-0" />
                 )}
+                {activeAgent.role === 'authoriser' && (
+                  <Shield className="w-3 h-3 text-amber-400 shrink-0" />
+                )}
                 {activeAgent.name}
               </span>
 
-              {/* Manager / Worker role toggle */}
+              {/* Parent indicator with quick-detach button */}
+              {activeAgent.parentId && (() => {
+                const parent = agentById.get(activeAgent.parentId);
+                return parent ? (
+                  <span className="flex items-center gap-1 text-xs text-zinc-500 bg-zinc-800/60 border border-zinc-700/50 rounded-md px-2 py-1">
+                    <span className="text-zinc-600">↑</span>
+                    <span className="truncate max-w-[6rem]">{parent.name}</span>
+                    <button
+                      onClick={() => handleRemoveParent(activeAgent.id)}
+                      title="Remove parent link"
+                      className="text-zinc-600 hover:text-red-400 transition-colors ml-0.5"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ) : null;
+              })()}
+
+              {/* Role cycle toggle: worker → manager → authoriser → worker */}
               <button
                 onClick={() =>
                   updateAgent(activeAgent.id, {
-                    role: activeAgent.role === 'manager' ? 'worker' : 'manager',
+                    role:
+                      activeAgent.role === 'worker'
+                        ? 'manager'
+                        : activeAgent.role === 'manager'
+                        ? 'authoriser'
+                        : 'worker',
                   })
                 }
-                title={
-                  activeAgent.role === 'manager'
-                    ? 'Manager mode — click to make worker'
-                    : 'Worker mode — click to promote to manager'
-                }
+                title="Cycle role: Worker → Manager → Authoriser → Worker"
                 className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors ${
                   activeAgent.role === 'manager'
                     ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
+                    : activeAgent.role === 'authoriser'
+                    ? 'bg-amber-600/20 text-amber-400 border border-amber-500/30'
                     : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'
                 }`}
               >
-                <Crown className="w-3 h-3" />
-                {activeAgent.role === 'manager' ? 'Manager' : 'Worker'}
+                {activeAgent.role === 'manager' && <Crown className="w-3 h-3" />}
+                {activeAgent.role === 'authoriser' && <Shield className="w-3 h-3" />}
+                {activeAgent.role === 'worker' && <Edit2 className="w-3 h-3" />}
+                {activeAgent.role === 'manager'
+                  ? 'Manager'
+                  : activeAgent.role === 'authoriser'
+                  ? 'Authoriser'
+                  : 'Worker'}
+              </button>
+
+              {/* Recursive toggle (manager only) */}
+              {activeAgent.role === 'manager' && (
+                <button
+                  onClick={() =>
+                    updateAgent(activeAgent.id, { recursive: !activeAgent.recursive })
+                  }
+                  title={
+                    activeAgent.recursive
+                      ? 'Recursive mode active — click to disable'
+                      : 'Enable recursive mode: manager loops until authoriser approves'
+                  }
+                  className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors ${
+                    activeAgent.recursive
+                      ? 'bg-purple-600/20 text-purple-400 border border-purple-500/30'
+                      : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'
+                  }`}
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  Recursive
+                </button>
+              )}
+
+              {/* Edit system prompt */}
+              <button
+                onClick={() => handleOpenPromptEditor()}
+                title="Edit this agent's system prompt / task framing"
+                className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors ${
+                  activeAgent.systemPrompt.trim()
+                    ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/30'
+                    : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'
+                }`}
+              >
+                <MessageSquare className="w-3 h-3" />
+                Prompt
               </button>
 
               {/* Model picker */}
@@ -937,19 +1214,21 @@ export default function App() {
                     }
                   }}
                   placeholder={
-                    activeAgent.dirHandle
-                      ? activeAgent.role === 'manager'
-                        ? `${activeAgent.name} can spawn workers and delegate tasks…`
-                        : `Ask ${activeAgent.name} to create a file, search the web, write a script…`
-                      : 'Please open a folder first…'
+                    activeAgent.role === 'manager'
+                      ? activeAgent.recursive
+                        ? `${activeAgent.name} will work recursively until authoriser approves…`
+                        : `${activeAgent.name} can spawn workers and delegate tasks…`
+                      : activeAgent.role === 'authoriser'
+                      ? `${activeAgent.name} reviews work and provides APPROVED/REJECTED decisions…`
+                      : `Ask ${activeAgent.name} to create a file, search the web, write a script…`
                   }
-                  disabled={!activeAgent.dirHandle || activeAgent.isLoading}
+                  disabled={activeAgent.isLoading}
                   className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-4 pr-12 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 disabled:opacity-50 resize-none"
                   rows={1}
                 />
                 <button
                   onClick={() => handleSendMessage(activeAgent.id)}
-                  disabled={!activeAgent.input.trim() || !activeAgent.dirHandle || activeAgent.isLoading}
+                  disabled={!activeAgent.input.trim() || activeAgent.isLoading}
                   className="absolute right-2 top-2 p-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 rounded-lg disabled:opacity-50 transition-colors"
                 >
                   <Send className="w-4 h-4" />
@@ -1295,6 +1574,82 @@ export default function App() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── System Prompt Editor modal ────────────────────────────────────── */}
+      {showPromptModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-lg shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <MessageSquare className="w-4 h-4 text-emerald-400" />
+                Agent System Prompt — {activeAgent.name}
+              </h2>
+              <button
+                onClick={() => setShowPromptModal(false)}
+                className="text-zinc-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-zinc-400 mb-3">
+              Provide task context, goals, or constraints for this agent. This is appended to the
+              default system instruction and shapes how the agent interprets every message.
+              {activeAgent.role === 'authoriser' && (
+                <span className="block mt-1 text-amber-400">
+                  Authoriser tip: describe the quality criteria and what APPROVED vs REJECTED should mean.
+                </span>
+              )}
+              {activeAgent.role === 'manager' && activeAgent.recursive && (
+                <span className="block mt-1 text-purple-400">
+                  Recursive manager tip: specify the acceptance criteria the authoriser should check.
+                </span>
+              )}
+            </p>
+
+            <textarea
+              value={promptDraft}
+              onChange={e => setPromptDraft(e.target.value)}
+              placeholder={
+                activeAgent.role === 'authoriser'
+                  ? 'e.g. Approve only if the work is complete, well-documented, and all sub-tasks are finished. Reject if any part is missing or unclear.'
+                  : activeAgent.role === 'manager'
+                  ? 'e.g. You are managing a research team. Break the task into literature review, analysis, and summary sub-tasks. Ensure every claim is cited.'
+                  : 'e.g. Focus on Python 3.10+. Always add type hints. Write tests alongside any code you produce.'
+              }
+              rows={7}
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2.5 text-sm text-zinc-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 resize-none mb-4"
+            />
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowPromptModal(false)}
+                className="px-4 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+              {promptDraft.trim() && (
+                <button
+                  onClick={() => {
+                    updateAgent(activeAgent.id, { systemPrompt: '' });
+                    setPromptDraft('');
+                    setShowPromptModal(false);
+                  }}
+                  className="px-4 py-2 text-sm text-zinc-400 hover:text-red-400 transition-colors"
+                >
+                  Clear
+                </button>
+              )}
+              <button
+                onClick={handleSavePrompt}
+                className="px-4 py-2 text-sm bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium rounded-lg transition-colors"
+              >
+                Save Prompt
+              </button>
+            </div>
           </div>
         </div>
       )}
