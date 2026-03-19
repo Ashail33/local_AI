@@ -102,6 +102,17 @@ const baseToolDeclarations: FunctionDeclaration[] = [
   },
 ];
 
+/**
+ * Restricted tool set for manager agents.
+ * Managers may read files for context and write final summary documents,
+ * but they must NOT write code, build tools, or propose scripts — all
+ * implementation work must be delegated to worker agents.
+ */
+const managerBaseToolDeclarations: FunctionDeclaration[] = [
+  baseToolDeclarations[0], // read_file
+  baseToolDeclarations[2], // create_document (for final summaries / reports only)
+];
+
 const webSearchTool: FunctionDeclaration = {
   name: 'web_search',
   description: 'Search the internet for up-to-date information on a topic.',
@@ -298,36 +309,26 @@ function buildSystemInstruction(
   customSystemPrompt: string = '',
   handoffAgents: AgentRef[] = [],
 ): string {
-  const lines = [
-    `You are ${agentName}, an intelligent AI copilot.`,
-    'You help users think through problems, write code, create documents, build tools, and accomplish real-world tasks end-to-end.',
-    'You have access to a local workspace folder and a rich set of tools. Think step-by-step, choose the right tool for each sub-task, and produce high-quality, actionable output.',
-    'Use \'create_document\' to write reports, plans, specifications, analyses, READMEs, and any other human-readable documents.',
-    'Use \'build_tool\' to create reusable Python utilities or scripts that can be used by you or other agents later.',
-    'Use \'read_file\' and \'write_file\' for direct file read/write access.',
-    'If the user asks you to process complex binary files (Excel, Word, PDF, PowerPoint, images),',
-    'you MUST write a Python script to do it because you cannot read binary files directly.',
-    "Propose Python scripts using the 'propose_python_script' tool; the user will review and run them.",
-    'In your Python scripts you can install packages with micropip',
-    '(e.g. `await micropip.install("openpyxl")`).',
-    'Use `content = await read_file("file.txt")` and `await write_file("file.txt", content)`',
-    'in scripts for workspace file access.',
-  ];
-
-  if (enableWebSearch) {
-    lines.push("You can search the internet for current information using the 'web_search' tool.");
-  }
+  const lines: string[] = [];
 
   if (isManager) {
     lines.push(
-      'You are a MANAGER AGENT. Your primary role is to ORCHESTRATE — break complex tasks down and delegate sub-tasks to worker agents.',
-      'IMPORTANT: You MUST use your agent tools rather than doing all the work yourself.',
-      "Step 1 — Call 'list_agents' to discover all available agents and get their exact IDs.",
-      "Step 2 — For each sub-task, call 'spawn_agent' to create a specialist worker OR call 'message_agent' to delegate to an existing agent.",
-      "Step 3 — Use 'connect_agents' to set up a pipeline so one worker can hand off its output directly to another worker.",
-      "Step 4 — Collect all worker responses with 'message_agent', synthesise the results, and give the user a final answer.",
-      'NEVER write long code blocks or execute complex tasks yourself — always delegate to a worker.',
-      'Only write brief coordination logic or summaries directly; everything else must go through your agents.',
+      `You are ${agentName}, a MANAGER AGENT. Your sole responsibility is to ORCHESTRATE tasks by breaking them down and delegating every sub-task to worker agents.`,
+      'You are a coordinator, NOT an implementer. You must NEVER write code, scripts, or implement solutions yourself — that is always the job of your worker agents.',
+      'You do NOT have access to code-writing or scripting tools. Do not attempt to write code in any form.',
+      'Your only permitted actions are: reading files for context, producing final summary documents, and managing your agents.',
+      '',
+      'Orchestration workflow:',
+      "  Step 1 — Call 'list_agents' to discover all currently available agents and their exact IDs.",
+      "  Step 2 — Break the task into clear, well-defined sub-tasks. For each sub-task, either call 'spawn_agent' to create a specialist worker or call 'message_agent' to delegate to an existing agent.",
+      "  Step 3 — Optionally, call 'connect_agents' to establish a pipeline so one worker can hand its output directly to another worker.",
+      "  Step 4 — Collect results from all workers via 'message_agent', synthesise the findings, and deliver a final answer or summary to the user.",
+      '',
+      'Rules you must always follow:',
+      '  • NEVER write or generate code, Python scripts, shell commands, or any implementation yourself.',
+      '  • NEVER use write_file, build_tool, or propose_python_script — you do not have these tools.',
+      '  • ALWAYS delegate implementation, data processing, file writing, and computation to worker agents.',
+      '  • Keep your own responses to coordination decisions, task breakdowns, and final summaries only.',
     );
     if (spawnedAgents.length > 0) {
       lines.push(
@@ -338,6 +339,26 @@ function buildSystemInstruction(
         "You have no worker agents yet. Call 'list_agents' to see existing agents, or use 'spawn_agent' to create new ones.",
       );
     }
+  } else {
+    lines.push(
+      `You are ${agentName}, an intelligent AI copilot.`,
+      'You help users think through problems, write code, create documents, build tools, and accomplish real-world tasks end-to-end.',
+      'You have access to a local workspace folder and a rich set of tools. Think step-by-step, choose the right tool for each sub-task, and produce high-quality, actionable output.',
+      'Use \'create_document\' to write reports, plans, specifications, analyses, READMEs, and any other human-readable documents.',
+      'Use \'build_tool\' to create reusable Python utilities or scripts that can be used by you or other agents later.',
+      'Use \'read_file\' and \'write_file\' for direct file read/write access.',
+      'If the user asks you to process complex binary files (Excel, Word, PDF, PowerPoint, images),',
+      'you MUST write a Python script to do it because you cannot read binary files directly.',
+      "Propose Python scripts using the 'propose_python_script' tool; the user will review and run them.",
+      'In your Python scripts you can install packages with micropip',
+      '(e.g. `await micropip.install("openpyxl")`).',
+      'Use `content = await read_file("file.txt")` and `await write_file("file.txt", content)`',
+      'in scripts for workspace file access.',
+    );
+  }
+
+  if (enableWebSearch) {
+    lines.push("You can search the internet for current information using the 'web_search' tool.");
   }
 
   if (isManager && isRecursive) {
@@ -415,7 +436,9 @@ export async function processChatTurn(
   // ── Gemini path (with tool calling) ──────────────────────────────────────
   const ai = getAiClient();
   const tools = [
-    ...baseToolDeclarations,
+    // Managers get a restricted base tool set (no code-writing tools).
+    // Workers get the full base tool set.
+    ...(isManager ? managerBaseToolDeclarations : baseToolDeclarations),
     ...(enableWebSearch ? [webSearchTool] : []),
     ...(isManager ? managerToolDeclarations : []),
     ...(isManager && isRecursive ? [requestSignoffTool] : []),
