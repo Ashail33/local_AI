@@ -193,3 +193,29 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - No new features were introduced; the change is purely a bug fix aimed at ensuring successful builds.
 - The design pattern of wrapping user scripts in an async function for top-level await usage was previously employed but is no longer applicable due to the function's removal.
 - Future developers should be aware of the potential for duplicate exports in the codebase and ensure that function names are unique to prevent similar build issues.
+
+---
+
+## 2026-03-19 18:21:01 UTC — `150852f`
+> Fix manager agent stuck in planning loop: auto-execute worker tasks on spawn (#16)
+
+* Initial plan
+
+* Fix manager agent stuck loop: auto-execute worker tasks on spawn
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+---------
+
+Co-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **Files Changed**: The commit modifies `src/App.tsx` and `src/lib/ai.ts` to address the issue of the manager agent getting stuck in a planning loop by auto-executing worker tasks upon spawning.
+  
+- **Bug Fix**: The main fix ensures that when a new worker agent is spawned, it immediately executes its initial task, providing real-time results to the manager agent without requiring a separate call to `message_agent`.
+
+- **New Feature**: The `AgentRef` interface in `src/lib/ai.ts` is updated to include an `initialResponse` property, which stores the worker's response to its initial task.
+
+- **Design Decisions**: The implementation introduces a context-rich system prompt for the worker, enhancing task execution by clarifying its delegation from the manager agent. A safety guard is added to prevent unbounded tool-call loops, limiting the maximum iterations to 30.
+
+- **Future Considerations**: Developers should be aware of the new `initialResponse` property in the `AgentRef` interface and the implications of the auto-execution feature on the overall agent communication flow. Care should be taken to handle potential errors during task execution, as these are now logged and reflected in the worker's message history.
