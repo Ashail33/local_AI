@@ -93,6 +93,24 @@ const managerToolDeclarations: FunctionDeclaration[] = [
   },
 ];
 
+/** Tool only available to recursive manager agents to request authoriser sign-off. */
+const requestSignoffTool: FunctionDeclaration = {
+  name: 'request_signoff',
+  description:
+    'Request authorisation that the assigned task is complete. Submit a detailed summary of ' +
+    'the work completed and results achieved. Returns APPROVED or REJECTED with feedback.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      summary: {
+        type: Type.STRING,
+        description: 'A detailed summary of the work completed, decisions made, and results achieved.',
+      },
+    },
+    required: ['summary'],
+  },
+};
+
 // ── Ollama helper ─────────────────────────────────────────────────────────────
 
 async function ollamaChat(
@@ -144,6 +162,12 @@ export interface ProcessChatOptions {
   onSpawnAgent?: (name: string, task: string) => Promise<AgentRef>;
   /** Called when the manager invokes message_agent. Returns the worker's reply. */
   onMessageAgent?: (agentId: string, message: string) => Promise<string>;
+  /** Custom user-defined context / task framing appended to the system instruction. */
+  customSystemPrompt?: string;
+  /** When true (recursive manager), the agent receives the request_signoff tool. */
+  isRecursive?: boolean;
+  /** Called when a recursive manager invokes request_signoff. Returns APPROVED/REJECTED string. */
+  onRequestSignoff?: (summary: string) => Promise<string>;
 }
 
 function buildSystemInstruction(
@@ -151,6 +175,8 @@ function buildSystemInstruction(
   enableWebSearch: boolean,
   isManager: boolean = false,
   spawnedAgents: AgentRef[] = [],
+  isRecursive: boolean = false,
+  customSystemPrompt: string = '',
 ): string {
   const lines = [
     `You are ${agentName}, a powerful Local AI Assistant.`,
@@ -185,6 +211,19 @@ function buildSystemInstruction(
     }
   }
 
+  if (isManager && isRecursive) {
+    lines.push(
+      'You are also a RECURSIVE MANAGER. Keep working autonomously until the task is fully complete.',
+      "When you believe the task is done, call 'request_signoff' with a detailed summary of the work and results.",
+      'If the authoriser REJECTS your work, carefully analyse their feedback and continue working to address every point.',
+      'Keep iterating — spawning more agents, gathering more information, revising outputs — until you receive APPROVED status.',
+    );
+  }
+
+  if (customSystemPrompt.trim()) {
+    lines.push(`\n\nTask Context & Instructions:\n${customSystemPrompt.trim()}`);
+  }
+
   return lines.join(' ');
 }
 
@@ -205,9 +244,19 @@ export async function processChatTurn(
     spawnedAgents = [],
     onSpawnAgent,
     onMessageAgent,
+    customSystemPrompt = '',
+    isRecursive = false,
+    onRequestSignoff,
   } = options;
 
-  const systemInstruction = buildSystemInstruction(agentName, enableWebSearch, isManager, spawnedAgents);
+  const systemInstruction = buildSystemInstruction(
+    agentName,
+    enableWebSearch,
+    isManager,
+    spawnedAgents,
+    isRecursive,
+    customSystemPrompt,
+  );
 
   // ── Ollama path (straightforward chat, no tool calling) ───────────────────
   if (provider === 'ollama') {
@@ -227,6 +276,7 @@ export async function processChatTurn(
     ...baseToolDeclarations,
     ...(enableWebSearch ? [webSearchTool] : []),
     ...(isManager ? managerToolDeclarations : []),
+    ...(isManager && isRecursive ? [requestSignoffTool] : []),
   ];
 
   const chat = ai.chats.create({
@@ -248,8 +298,11 @@ export async function processChatTurn(
   onLog('AI is thinking...');
   let response = await chat.sendMessage({ message: prompt });
 
+  // Track whether the authoriser approved (used to break recursive loop)
+  let taskApproved = false;
+
   // Handle tool calls in a loop
-  while (response.functionCalls && response.functionCalls.length > 0) {
+  while (response.functionCalls && response.functionCalls.length > 0 && !taskApproved) {
     const call = response.functionCalls[0];
     onLog(`AI called tool: ${call.name}`);
 
@@ -326,6 +379,20 @@ export async function processChatTurn(
         } catch (e: any) {
           response = await chat.sendMessage({ message: `message_agent failed: ${e.message}` });
         }
+      }
+    } else if (call.name === 'request_signoff') {
+      const summary = call.args.summary as string;
+      onLog('Manager requesting authoriser sign-off…');
+      try {
+        const result = onRequestSignoff
+          ? await onRequestSignoff(summary)
+          : 'APPROVED: No authoriser configured — task marked as complete.';
+        if (result.startsWith('APPROVED')) {
+          taskApproved = true;
+        }
+        response = await chat.sendMessage({ message: `request_signoff result: ${result}` });
+      } catch (e: any) {
+        response = await chat.sendMessage({ message: `request_signoff failed: ${e.message}` });
       }
     } else {
       // Unknown tool – break to avoid infinite loop

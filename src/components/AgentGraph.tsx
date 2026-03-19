@@ -6,11 +6,12 @@ import type { ModelProvider } from '../lib/models';
 export interface GraphAgent {
   id: string;
   name: string;
-  role: 'manager' | 'worker';
+  role: 'manager' | 'worker' | 'authoriser';
   provider: ModelProvider;
   modelId: string;
   parentId: string | null;
   isLoading: boolean;
+  recursive: boolean;
 }
 
 export interface MessageLink {
@@ -25,6 +26,12 @@ interface AgentGraphProps {
   activeAgentId: string;
   messageLinks: MessageLink[];
   onSelectAgent: (id: string) => void;
+  /** Called when the user manually draws a message link between two agents. */
+  onCreateLink?: (fromId: string, toId: string) => void;
+  /** Called when the user sets one agent as the parent of another. */
+  onSetParent?: (childId: string, parentId: string) => void;
+  /** Called when the user removes the parent of an agent (makes it a root). */
+  onRemoveParent?: (agentId: string) => void;
 }
 
 // ── Layout ────────────────────────────────────────────────────────────────────
@@ -97,13 +104,21 @@ function computeLayout(agents: GraphAgent[]): Map<string, Pos> {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+type ConnectMode = 'none' | 'link' | 'parent';
+
 export default function AgentGraph({
   agents,
   activeAgentId,
   messageLinks,
   onSelectAgent,
+  onCreateLink,
+  onSetParent,
+  onRemoveParent,
 }: AgentGraphProps) {
   const [positions, setPositions] = useState<Map<string, Pos>>(() => computeLayout(agents));
+  const [connectMode, setConnectMode] = useState<ConnectMode>('none');
+  const [pendingId, setPendingId] = useState<string | null>(null);
+
   const dragging = useRef<{
     id: string;
     startMx: number;
@@ -128,7 +143,16 @@ export default function AgentGraph({
     });
   }, [agents]);
 
+  // Reset connect mode when agents list changes (e.g. agent removed)
+  useEffect(() => {
+    if (pendingId && !agents.find(a => a.id === pendingId)) {
+      setPendingId(null);
+      setConnectMode('none');
+    }
+  }, [agents, pendingId]);
+
   const handleMouseDown = (e: React.MouseEvent, id: string) => {
+    if (connectMode !== 'none') return; // don't drag in connect mode
     e.stopPropagation();
     const pos = positions.get(id);
     if (!pos) return;
@@ -158,6 +182,42 @@ export default function AgentGraph({
     };
   }, [handleMouseMove, handleMouseUp]);
 
+  const handleNodeClick = (e: React.MouseEvent, id: string) => {
+    if (connectMode === 'none') {
+      onSelectAgent(id);
+      return;
+    }
+    e.stopPropagation();
+    if (!pendingId) {
+      // First click: select source / child
+      setPendingId(id);
+    } else if (pendingId !== id) {
+      // Second click: complete the connection
+      if (connectMode === 'link') {
+        onCreateLink?.(pendingId, id);
+      } else if (connectMode === 'parent') {
+        // pendingId = child, id = parent
+        onSetParent?.(pendingId, id);
+      }
+      setPendingId(null);
+      setConnectMode('none');
+    }
+  };
+
+  const cancelConnect = () => {
+    setConnectMode('none');
+    setPendingId(null);
+  };
+
+  const toggleMode = (mode: ConnectMode) => {
+    if (connectMode === mode) {
+      cancelConnect();
+    } else {
+      setConnectMode(mode);
+      setPendingId(null);
+    }
+  };
+
   // Helpers
   const nodeCenter = (id: string): Pos => {
     const p = positions.get(id);
@@ -173,8 +233,69 @@ export default function AgentGraph({
     maxY = Math.max(maxY, y + NODE_H + MARGIN);
   }
 
+  const connectModeLabel =
+    connectMode === 'link'
+      ? pendingId
+        ? `Click target agent to link from "${agents.find(a => a.id === pendingId)?.name ?? '…'}"`
+        : 'Click source agent to start a message link'
+      : connectMode === 'parent'
+      ? pendingId
+        ? `Click parent agent for "${agents.find(a => a.id === pendingId)?.name ?? '…'}"`
+        : 'Click the child agent first'
+      : '';
+
   return (
     <div className="flex-1 relative overflow-auto bg-[#09090b] select-none">
+      {/* ── Floating connect-mode toolbar ──────────────────────────────── */}
+      <div className="absolute top-3 left-3 z-10 flex flex-col gap-2">
+        <div className="flex gap-1.5">
+          <button
+            onClick={() => toggleMode('link')}
+            title="Draw a message link between two agents"
+            className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-colors ${
+              connectMode === 'link'
+                ? 'bg-emerald-500 text-zinc-950'
+                : 'bg-zinc-800/90 text-zinc-300 hover:bg-zinc-700 hover:text-white'
+            }`}
+          >
+            🔗 Link Agents
+          </button>
+          <button
+            onClick={() => toggleMode('parent')}
+            title="Set parent-child hierarchy between agents"
+            className={`px-2.5 py-1 text-xs rounded-lg font-medium transition-colors ${
+              connectMode === 'parent'
+                ? 'bg-indigo-500 text-white'
+                : 'bg-zinc-800/90 text-zinc-300 hover:bg-zinc-700 hover:text-white'
+            }`}
+          >
+            ⬆ Set Parent
+          </button>
+          {onRemoveParent && (
+            <button
+              onClick={() => toggleMode('parent')}
+              title="Remove parent link — click an agent in the graph then select the parent mode"
+              className="px-2.5 py-1 text-xs rounded-lg font-medium bg-zinc-800/90 text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
+            >
+              ✂ Detach
+            </button>
+          )}
+        </div>
+
+        {/* Status / instruction message when in connect mode */}
+        {connectMode !== 'none' && (
+          <div className="flex items-center gap-2 bg-zinc-900/95 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-zinc-300 max-w-xs backdrop-blur-sm">
+            <span className="flex-1">{connectModeLabel}</span>
+            <button
+              onClick={cancelConnect}
+              className="text-zinc-500 hover:text-zinc-200 shrink-0 font-bold"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Empty state */}
       {agents.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center text-zinc-600 text-sm">
@@ -191,6 +312,10 @@ export default function AgentGraph({
           {/* Arrow for message edges */}
           <marker id="arrow-msg" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
             <polygon points="0 0, 8 3, 0 6" fill="#10b981" />
+          </marker>
+          {/* Arrow for manual link edges */}
+          <marker id="arrow-manual" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#6366f1" />
           </marker>
         </defs>
 
@@ -217,7 +342,7 @@ export default function AgentGraph({
             );
           })}
 
-        {/* ── Message edges (dashed emerald) ───────────────────────────── */}
+        {/* ── Message edges (dashed emerald for auto, solid indigo for manual) */}
         {messageLinks
           .filter(l => positions.has(l.fromId) && positions.has(l.toId))
           .map((l, i) => {
@@ -226,52 +351,95 @@ export default function AgentGraph({
             // Quadratic bezier for a gentle curve
             const mx = (from.x + to.x) / 2;
             const my = Math.min(from.y, to.y) - 40;
+            const isManual = l.messageCount === 0;
+            const strokeColor = isManual ? '#6366f1' : '#10b981';
+            const markerId = isManual ? 'url(#arrow-manual)' : 'url(#arrow-msg)';
             return (
               <g key={`msg-${i}`}>
                 <path
                   d={`M ${from.x} ${from.y} Q ${mx} ${my} ${to.x} ${to.y}`}
                   fill="none"
-                  stroke="#10b981"
+                  stroke={strokeColor}
                   strokeWidth={1.5}
-                  strokeDasharray="5 3"
-                  markerEnd="url(#arrow-msg)"
+                  strokeDasharray={isManual ? '3 4' : '5 3'}
+                  markerEnd={markerId}
                   opacity={0.7}
                 />
-                {/* Message count badge */}
-                <text
-                  x={mx}
-                  y={my - 4}
-                  textAnchor="middle"
-                  fontSize={10}
-                  fill="#10b981"
-                  opacity={0.85}
-                  style={{ fontFamily: 'monospace' }}
-                >
-                  {l.messageCount}×
-                </text>
+                {/* Message count badge (only for active communication links) */}
+                {l.messageCount > 0 && (
+                  <text
+                    x={mx}
+                    y={my - 4}
+                    textAnchor="middle"
+                    fontSize={10}
+                    fill="#10b981"
+                    opacity={0.85}
+                    style={{ fontFamily: 'monospace' }}
+                  >
+                    {l.messageCount}×
+                  </text>
+                )}
               </g>
             );
           })}
+
+        {/* ── Preview edge when in connect mode with a source selected ──── */}
+        {connectMode !== 'none' && pendingId && positions.has(pendingId) && (() => {
+          const from = nodeCenter(pendingId);
+          const strokeColor = connectMode === 'link' ? '#10b981' : '#818cf8';
+          return (
+            <circle
+              cx={from.x}
+              cy={from.y}
+              r={NODE_W / 2 + 6}
+              fill="none"
+              stroke={strokeColor}
+              strokeWidth={2}
+              strokeDasharray="6 3"
+              opacity={0.6}
+            >
+              <animate attributeName="stroke-dashoffset" from="0" to="-18" dur="1s" repeatCount="indefinite" />
+            </circle>
+          );
+        })()}
 
         {/* ── Agent nodes ──────────────────────────────────────────────── */}
         {agents.map(agent => {
           const pos = positions.get(agent.id);
           if (!pos) return null;
           const isActive = agent.id === activeAgentId;
+          const isPending = agent.id === pendingId;
           const isManager = agent.role === 'manager';
+          const isAuthoriser = agent.role === 'authoriser';
 
-          const borderColor = isActive ? '#10b981' : isManager ? '#818cf8' : '#3f3f46';
-          const bgColor = isActive ? '#111827' : '#18181b';
-          const badgeBg = isManager ? '#4f46e5' : '#0f766e';
-          const badgeLabel = isManager ? 'MANAGER' : 'WORKER';
-          const badgeW = isManager ? 54 : 42;
+          const borderColor = isPending
+            ? (connectMode === 'link' ? '#10b981' : '#818cf8')
+            : isActive
+            ? '#10b981'
+            : isManager
+            ? '#818cf8'
+            : isAuthoriser
+            ? '#f59e0b'
+            : '#3f3f46';
+          const bgColor = isActive || isPending ? '#111827' : '#18181b';
+          const badgeBg = isManager ? '#4f46e5' : isAuthoriser ? '#b45309' : '#0f766e';
+          const badgeLabel = isManager
+            ? (agent.recursive ? 'RECUR' : 'MGR')
+            : isAuthoriser
+            ? 'AUTH'
+            : 'WORKER';
+          const badgeW = isManager
+            ? (agent.recursive ? 38 : 26)
+            : isAuthoriser
+            ? 30
+            : 42;
 
           return (
             <g
               key={agent.id}
               transform={`translate(${pos.x}, ${pos.y})`}
-              style={{ cursor: 'pointer' }}
-              onClick={() => onSelectAgent(agent.id)}
+              style={{ cursor: connectMode !== 'none' ? 'crosshair' : 'pointer' }}
+              onClick={e => handleNodeClick(e, agent.id)}
               onMouseDown={e => handleMouseDown(e, agent.id)}
             >
               {/* Shadow */}
@@ -289,7 +457,7 @@ export default function AgentGraph({
                 rx={8}
                 fill={bgColor}
                 stroke={borderColor}
-                strokeWidth={isActive ? 2 : 1.5}
+                strokeWidth={(isActive || isPending) ? 2 : 1.5}
               />
 
               {/* Role badge */}
@@ -332,9 +500,14 @@ export default function AgentGraph({
                 </circle>
               )}
 
-              {/* Drag hint */}
+              {/* Drag hint / tooltip */}
               <title>
-                {agent.name} ({agent.role}) — click to open, drag to move
+                {agent.name} ({agent.role}{agent.recursive ? ', recursive' : ''})
+                {connectMode !== 'none'
+                  ? pendingId
+                    ? ' — click to connect'
+                    : ' — click to select as source'
+                  : ' — click to open, drag to move'}
               </title>
             </g>
           );
@@ -362,12 +535,31 @@ export default function AgentGraph({
           <span>Message sent</span>
         </div>
         <div className="flex items-center gap-2">
+          <svg width="28" height="4">
+            <line
+              x1="0" y1="2" x2="28" y2="2"
+              stroke="#6366f1"
+              strokeWidth="1.5"
+              strokeDasharray="3 3"
+            />
+          </svg>
+          <span>Manual link</span>
+        </div>
+        <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded bg-indigo-600 shrink-0" />
-          <span>Manager agent</span>
+          <span>Manager (MGR)</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 rounded bg-indigo-500 shrink-0" />
+          <span>Recursive (RECUR)</span>
         </div>
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded bg-teal-700 shrink-0" />
-          <span>Worker agent</span>
+          <span>Worker</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 rounded bg-amber-700 shrink-0" />
+          <span>Authoriser (AUTH)</span>
         </div>
         <p className="text-zinc-600 pt-1 border-t border-zinc-800">Drag nodes to rearrange</p>
       </div>
