@@ -422,6 +422,41 @@ export interface ProcessChatOptions {
   onAutoRunScript?: (script: string) => Promise<string>;
 }
 
+/**
+ * Build a concise system instruction for Ollama models that have NO tool-calling ability.
+ * The prompt must NOT reference any tools; the model should respond directly.
+ */
+function buildOllamaSystemInstruction(
+  agentName: string,
+  isManager: boolean,
+  customSystemPrompt: string,
+): string {
+  const lines: string[] = [];
+
+  if (isManager) {
+    lines.push(
+      `You are ${agentName}, an AI manager assistant.`,
+      'Help the user by breaking tasks into clear steps, providing structured plans, and summarising results.',
+      'Format your responses with Markdown: use ## headings, bullet lists, and **bold** for emphasis.',
+      'Be concise and actionable — give the user a clear plan they can follow.',
+    );
+  } else {
+    lines.push(
+      `You are ${agentName}, an intelligent AI assistant.`,
+      'Help users think through problems, answer questions, write content, and accomplish tasks.',
+      'Format your responses with clean Markdown: use headings, bullet lists, code blocks, and bold text for clarity.',
+      'Be concise, helpful, and produce high-quality, actionable output.',
+      'When writing code, use fenced code blocks with the language specified.',
+    );
+  }
+
+  if (customSystemPrompt.trim()) {
+    lines.push(`\nTask Context & Instructions:\n${customSystemPrompt.trim()}`);
+  }
+
+  return lines.join(' ');
+}
+
 function buildSystemInstruction(
   agentName: string,
   enableWebSearch: boolean,
@@ -453,6 +488,7 @@ function buildSystemInstruction(
       '  • Keep your own responses to coordination decisions, task breakdowns, and final summaries only.',
       '  • Format your final response with clear Markdown sections (## headings, bullet lists). Never paste raw code blocks or script output from workers — describe results in your own words.',
       '  • When presenting results: open with a brief executive summary, then list what each worker produced, then give your synthesis and recommendations.',
+      '  • IMPORTANT: Do NOT narrate or describe tool calls in your text responses. Use the actual tool functions provided to you. Your text responses should only contain summaries, plans, and results — not instructions to "call" tools.',
     );
     if (spawnedAgents.length > 0) {
       lines.push(
@@ -481,6 +517,7 @@ function buildSystemInstruction(
       'Use \'write_document\' to write .txt, .docx (Word), or .pdf files to the workspace.',
       'Use \'create_folder\' to create subfolders (e.g., "reports/2024") before writing files into them.',
       'File paths support subfolders: write to "reports/summary.txt" instead of just "summary.txt".',
+      'IMPORTANT: Do NOT narrate or describe tool calls in your text responses. Use the actual tool functions to perform actions. Your text responses should contain explanations, results, and summaries only.',
     );
   }
 
@@ -551,13 +588,18 @@ export async function processChatTurn(
 
   // ── Ollama path (straightforward chat, no tool calling) ───────────────────
   if (provider === 'ollama') {
+    const ollamaSystemPrompt = buildOllamaSystemInstruction(
+      agentName,
+      isManager,
+      customSystemPrompt,
+    );
     const messages = chatHistory
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role, content: m.content }));
     messages.push({ role: 'user', content: prompt });
 
     onLog(`Using Ollama model: ${modelId}`);
-    const text = await ollamaChat(modelId, messages, systemInstruction);
+    const text = await ollamaChat(modelId, messages, ollamaSystemPrompt);
     return { role: 'assistant', content: text };
   }
 
