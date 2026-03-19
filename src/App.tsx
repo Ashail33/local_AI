@@ -337,7 +337,10 @@ export default function App() {
 
   /**
    * Called when a manager agent uses the spawn_agent tool.
-   * Creates a new worker agent parented to managerId and returns its ref.
+   * Creates a new worker agent parented to managerId, immediately executes the
+   * initial task, and returns the worker's ref including its initial response.
+   * This ensures the manager gets real results back from spawn_agent without
+   * needing a separate message_agent call to kick off the work.
    */
   const buildSpawnAgentCallback = (managerId: string) =>
     async (name: string, task: string): Promise<AgentRef> => {
@@ -348,11 +351,6 @@ export default function App() {
         newWorker.dirHandle = managerAgent.dirHandle;
         newWorker.files = managerAgent.files;
       }
-      // Seed the worker's history with the initial task as a system note
-      newWorker.messages = [
-        ...newWorker.messages,
-        { role: 'system', content: `Initial task from manager: ${task}` },
-      ];
       setAgents(prev => [...prev, newWorker]);
       // Notify the manager's chat thread that an agent was spawned
       setAgents(prev =>
@@ -376,7 +374,87 @@ export default function App() {
         ...prev,
         { fromId: managerId, toId: newWorker.id, messageCount: 0, lastMessage: task },
       ]);
-      return { id: newWorker.id, name: newWorker.name };
+
+      // Immediately execute the initial task so the manager receives real results.
+      setAgents(prev =>
+        prev.map(a => a.id === newWorker.id ? { ...a, isLoading: true } : a),
+      );
+      const workerLog = (msg: string) =>
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === newWorker.id ? { ...a, terminalLogs: [...a.terminalLogs, msg] } : a,
+          ),
+        );
+
+      let initialResponse: string | undefined;
+      // Build a context-rich system prompt that tells the worker it was delegated by a manager
+      const managerContextPrompt = [
+        newWorker.systemPrompt,
+        `You have been assigned this task by manager agent "${managerAgent?.name ?? 'manager'}". Complete it fully and autonomously.`,
+      ].filter(Boolean).join('\n\n');
+      try {
+        const workerResponse = await processChatTurn(
+          task,
+          [],
+          newWorker.dirHandle,
+          (script, explanation) =>
+            updateAgent(newWorker.id, { proposedScript: { code: script, explanation } }),
+          workerLog,
+          {
+            modelId: newWorker.modelId,
+            provider: newWorker.provider,
+            enableWebSearch: newWorker.enableWebSearch,
+            agentName: newWorker.name,
+            customSystemPrompt: managerContextPrompt,
+            onAutoRunScript: buildAutoRunScriptCallback(newWorker.id),
+          },
+        );
+
+        initialResponse = workerResponse.content;
+
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === newWorker.id
+              ? {
+                  ...a,
+                  isLoading: false,
+                  messages: [
+                    ...a.messages,
+                    { role: 'user' as const, content: `[Task from manager]: ${task}` },
+                    workerResponse as Message,
+                  ],
+                }
+              : a,
+          ),
+        );
+
+        // Refresh the worker's file list after it may have written files
+        if (newWorker.dirHandle) {
+          const fileList = await listFiles(newWorker.dirHandle);
+          updateAgent(newWorker.id, { files: fileList });
+        }
+      } catch (err: any) {
+        initialResponse = `Error: ${err.message}`;
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === newWorker.id
+              ? {
+                  ...a,
+                  isLoading: false,
+                  messages: [
+                    ...a.messages,
+                    {
+                      role: 'system' as const,
+                      content: `Error executing initial task: ${err.message}`,
+                    },
+                  ],
+                }
+              : a,
+          ),
+        );
+      }
+
+      return { id: newWorker.id, name: newWorker.name, initialResponse };
     };
 
   /**

@@ -379,6 +379,11 @@ export interface AgentRef {
   name: string;
   /** Role of the agent: 'manager' | 'worker' | 'authoriser' */
   role?: string;
+  /**
+   * The worker's response to its initial task, populated when spawn_agent
+   * auto-executes the task immediately upon creation.
+   */
+  initialResponse?: string;
 }
 
 export interface ProcessChatOptions {
@@ -589,9 +594,17 @@ export async function processChatTurn(
 
   // Track whether the authoriser approved (used to break recursive loop)
   let taskApproved = false;
+  // Safety guard: prevent unbounded tool-call loops
+  const MAX_TOOL_ITERATIONS = 30;
+  let toolIterationCount = 0;
 
   // Handle tool calls in a loop
   while (response.functionCalls && response.functionCalls.length > 0 && !taskApproved) {
+    toolIterationCount++;
+    if (toolIterationCount > MAX_TOOL_ITERATIONS) {
+      onLog('Warning: Maximum tool iteration limit reached. Stopping to avoid infinite loop.');
+      break;
+    }
     const call = response.functionCalls[0];
     onLog(`AI called tool: ${call.name}`);
 
@@ -732,9 +745,10 @@ export async function processChatTurn(
             call.args.name as string,
             call.args.task as string,
           );
-          response = await chat.sendMessage({
-            message: `spawn_agent succeeded. New agent "${newAgent.name}" created with ID: ${newAgent.id}. Use message_agent with this ID to communicate with it.`,
-          });
+          const spawnMsg = newAgent.initialResponse
+            ? `spawn_agent succeeded. Agent "${newAgent.name}" (ID: ${newAgent.id}) has been created and has already completed its initial task. Worker response:\n${newAgent.initialResponse}\nUse message_agent with this ID if you need to send follow-up instructions.`
+            : `spawn_agent succeeded. New agent "${newAgent.name}" created with ID: ${newAgent.id}. Use message_agent with this ID to communicate with it.`;
+          response = await chat.sendMessage({ message: spawnMsg });
         } catch (e: any) {
           response = await chat.sendMessage({ message: `spawn_agent failed: ${e.message}` });
         }
