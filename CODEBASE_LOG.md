@@ -236,3 +236,17 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - **Design Decisions**: The commit emphasizes the importance of context in agent creation, ensuring that workers have the same operational context as their managers, which is crucial for maintaining functionality in tool interactions.
 
 - **Future Considerations**: Developers should be aware of the new properties inherited by worker agents and ensure that any changes to the manager agent's capabilities are reflected in the worker agents to maintain consistency. Additionally, the updated error handling should be considered when implementing new tools or features that rely on directory access.
+
+---
+
+## 2026-03-19 19:59:23 UTC — `6e66acc`
+> Extract magic number to MAX_MESSAGE_PREVIEW constant
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- The commit modifies the `AgentGraph.tsx` file in the `src/components` directory.
+- It introduces a new constant, `MAX_MESSAGE_PREVIEW`, set to 500, which defines the maximum number of characters displayed for messages in the link chat panel.
+- The magic number `500` used for message truncation is replaced with the newly defined constant, improving code readability and maintainability.
+- This change enhances the clarity of the code by providing a named constant, making it easier for future developers to understand the purpose of the limit.
+- No new features or bug fixes are introduced; the change is purely a refactor for better code practices.
+- Future developers should ensure that any changes to the message preview length are reflected in the `MAX_MESSAGE_PREVIEW` constant to maintain consistency across the application.
