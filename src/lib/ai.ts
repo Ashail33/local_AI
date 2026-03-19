@@ -420,6 +420,8 @@ export interface ProcessChatOptions {
    * Returns a result string.
    */
   onAutoRunScript?: (script: string) => Promise<string>;
+  /** When true (manager only), the agent is running in live autonomous mode. */
+  isLive?: boolean;
 }
 
 /**
@@ -465,6 +467,7 @@ function buildSystemInstruction(
   isRecursive: boolean = false,
   customSystemPrompt: string = '',
   handoffAgents: AgentRef[] = [],
+  isLive: boolean = false,
 ): string {
   const lines: string[] = [];
 
@@ -478,6 +481,8 @@ function buildSystemInstruction(
       'You have access to the internet and can search for up-to-date information using the web_search tool. Your worker agents also have internet access when you spawn them.',
       'Use web_search to gather information, research topics, and find resources before delegating tasks to workers.',
       '',
+      'CRITICAL — You MUST use your actual tool functions to take actions. When the user asks you to create, spawn, or set up an agent, you MUST call the spawn_agent tool immediately. Do NOT simply describe or narrate what you would do — execute the tool call.',
+      '',
       'Orchestration workflow:',
       "  Step 1 — Call 'list_agents' to discover all currently available agents and their exact IDs.",
       "  Step 2 — Break the task into clear, well-defined sub-tasks. For each sub-task, either call 'spawn_agent' to create a specialist worker or call 'message_agent' to delegate to an existing agent.",
@@ -488,6 +493,7 @@ function buildSystemInstruction(
       '  • NEVER write or generate code, Python scripts, shell commands, or any implementation yourself.',
       '  • NEVER use write_file, build_tool, or propose_python_script — you do not have these tools.',
       '  • ALWAYS delegate implementation, data processing, file writing, and computation to worker agents.',
+      '  • When asked to create or spawn agents, ALWAYS call the spawn_agent tool. Never just describe the agent creation — actually do it.',
       '  • ALL file paths MUST be relative to the workspace root. NEVER use absolute paths, drive letters (e.g. "C:/"), or user-specific paths (e.g. "Users/…/Desktop/").',
       '  • Keep your own responses to coordination decisions, task breakdowns, and final summaries only.',
       '  • Format your final response with clear Markdown sections (## headings, bullet lists). Never paste raw code blocks or script output from workers — describe results in your own words.',
@@ -500,7 +506,7 @@ function buildSystemInstruction(
       );
     } else {
       lines.push(
-        "You have no worker agents yet. Call 'list_agents' to see existing agents, or use 'spawn_agent' to create new ones.",
+        "You have no worker agents yet. Use 'spawn_agent' to create new worker agents, or call 'list_agents' to see any existing agents.",
       );
     }
   } else {
@@ -539,7 +545,7 @@ function buildSystemInstruction(
     );
   }
 
-  if (isManager) {
+  if (isManager && isLive) {
     lines.push(
       '',
       'You are a LIVE AUTONOMOUS AGENT. You run continuously in the background while active.',
@@ -589,6 +595,7 @@ export async function processChatTurn(
     handoffAgents = [],
     onHandoffToAgent,
     onAutoRunScript,
+    isLive = false,
   } = options;
 
   const systemInstruction = buildSystemInstruction(
@@ -599,6 +606,7 @@ export async function processChatTurn(
     isRecursive,
     customSystemPrompt,
     handoffAgents,
+    isLive,
   );
 
   // ── Ollama path (straightforward chat, no tool calling) ───────────────────
