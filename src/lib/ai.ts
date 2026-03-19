@@ -651,8 +651,8 @@ export async function processChatTurn(
     onLog(`AI called tool: ${call.name}`);
 
     if (call.name === 'read_file') {
-      if (!dirHandle) throw new Error('No directory selected.');
       try {
+        if (!dirHandle) throw new Error('No workspace folder selected. Ask the user to open a folder first.');
         const content = await readFile(dirHandle, call.args.filename as string);
         const preview =
           content.substring(0, 2000) + (content.length > 2000 ? '... (truncated)' : '');
@@ -661,16 +661,16 @@ export async function processChatTurn(
         response = await chat.sendMessage({ message: `Tool read_file failed: ${e.message}` });
       }
     } else if (call.name === 'write_file') {
-      if (!dirHandle) throw new Error('No directory selected.');
       try {
+        if (!dirHandle) throw new Error('No workspace folder selected. Ask the user to open a folder first.');
         await writeFile(dirHandle, call.args.filename as string, call.args.content as string);
         response = await chat.sendMessage({ message: 'Tool write_file succeeded.' });
       } catch (e: any) {
         response = await chat.sendMessage({ message: `Tool write_file failed: ${e.message}` });
       }
     } else if (call.name === 'create_document') {
-      if (!dirHandle) throw new Error('No directory selected.');
       try {
+        if (!dirHandle) throw new Error('No workspace folder selected. Ask the user to open a folder first.');
         await writeFile(dirHandle, call.args.filename as string, call.args.content as string);
         const docType = (call.args.document_type as string) || 'document';
         onLog(`Document created: ${call.args.filename} (${docType})`);
@@ -681,8 +681,8 @@ export async function processChatTurn(
         response = await chat.sendMessage({ message: `Tool create_document failed: ${e.message}` });
       }
     } else if (call.name === 'build_tool') {
-      if (!dirHandle) throw new Error('No directory selected.');
       try {
+        if (!dirHandle) throw new Error('No workspace folder selected. Ask the user to open a folder first.');
         const toolFilename = `${call.args.tool_name as string}.py`;
         const header = `# Tool: ${call.args.tool_name as string}\n# ${call.args.description as string}\n\n`;
         await writeFile(dirHandle, toolFilename, header + (call.args.script as string));
@@ -696,8 +696,8 @@ export async function processChatTurn(
         response = await chat.sendMessage({ message: `Tool build_tool failed: ${e.message}` });
       }
     } else if (call.name === 'create_folder') {
-      if (!dirHandle) throw new Error('No directory selected.');
       try {
+        if (!dirHandle) throw new Error('No workspace folder selected. Ask the user to open a folder first.');
         const { createFolder } = await import('./fs');
         await createFolder(dirHandle, call.args.folder_path as string);
         onLog(`Folder created: ${call.args.folder_path}`);
@@ -708,11 +708,11 @@ export async function processChatTurn(
         response = await chat.sendMessage({ message: `Tool create_folder failed: ${e.message}` });
       }
     } else if (call.name === 'write_document') {
-      if (!dirHandle) throw new Error('No directory selected.');
       const fmt = ((call.args.format as string) ?? 'txt').toLowerCase();
       const filename = call.args.filename as string;
       const content = call.args.content as string;
       try {
+        if (!dirHandle) throw new Error('No workspace folder selected. Ask the user to open a folder first.');
         if (fmt === 'txt') {
           await writeFile(dirHandle, filename, content);
           onLog(`Document written: ${filename} (txt)`);

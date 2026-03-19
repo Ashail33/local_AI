@@ -346,10 +346,16 @@ export default function App() {
     async (name: string, task: string): Promise<AgentRef> => {
       const managerAgent = agentsRef.current.find(a => a.id === managerId);
       const newWorker = createAgent(name, 'worker', managerId);
-      // Inherit workspace from manager if available
-      if (managerAgent?.dirHandle) {
-        newWorker.dirHandle = managerAgent.dirHandle;
-        newWorker.files = managerAgent.files;
+      // Inherit model, provider, and workspace from manager so the worker
+      // has the same capabilities (tool calling, API keys, etc.).
+      if (managerAgent) {
+        newWorker.modelId = managerAgent.modelId;
+        newWorker.provider = managerAgent.provider;
+        newWorker.enableWebSearch = managerAgent.enableWebSearch;
+        if (managerAgent.dirHandle) {
+          newWorker.dirHandle = managerAgent.dirHandle;
+          newWorker.files = managerAgent.files;
+        }
       }
       setAgents(prev => [...prev, newWorker]);
       // Notify the manager's chat thread that an agent was spawned
@@ -489,6 +495,7 @@ export default function App() {
             provider: target.provider,
             enableWebSearch: target.enableWebSearch,
             agentName: target.name,
+            customSystemPrompt: target.systemPrompt,
             onAutoRunScript: buildAutoRunScriptCallback(targetId),
           },
         );
