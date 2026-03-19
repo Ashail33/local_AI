@@ -50,6 +50,7 @@
   "build": {
     "appId": "com.locallm.app",
     "productName": "Local LM",
+    "afterPack": "./scripts/after-pack.cjs",
     "directories": {
       "output": "dist-electron",
       "buildResources": "assets"
@@ -57,6 +58,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "scripts/**/*",
       "package.json"
     ],
     "mac": {
@@ -65,7 +67,6 @@
         "zip"
       ],
       "category": "public.app-category.utilities",
-      "identity": null,
       "hardenedRuntime": false,
       "gatekeeperAssess": false
     },

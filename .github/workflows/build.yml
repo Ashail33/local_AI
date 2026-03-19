@@ -9,6 +9,12 @@ on:
     branches: [master, main]
   workflow_dispatch:
 
+env:
+  # Opt into Node.js 24 for all JavaScript actions to avoid Node 20 deprecation warnings.
+  # actions/upload-artifact@v5 and actions/download-artifact@v5 currently run on Node 20;
+  # this flag makes them run on Node 24 instead.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-macos:
     runs-on: macos-latest
