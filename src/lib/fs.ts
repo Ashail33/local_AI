@@ -27,7 +27,7 @@ async function getOrCreateDir(
  * Strips drive letters, absolute-path prefixes, common OS folder prefixes
  * (e.g. Users/…/Desktop), and any ".." traversal segments.
  */
-function sanitizePath(filePath: string): string {
+export function sanitizePath(filePath: string): string {
   // Normalise backslashes to forward slashes
   let cleaned = filePath.replace(/\\/g, '/');
 
