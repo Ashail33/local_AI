@@ -391,3 +391,36 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - **Independent Effects**: Split the single `useEffect` for scrolling into two independent effects, one for chat messages and another for terminal logs, enhancing maintainability and readability.
 - **Styling Adjustments**: Added `overflow-hidden` to the right panel container and `min-h-0` to the terminal flex container to ensure proper containment and flex behavior during resizing.
 - **Future Considerations**: Developers should be aware of the new refs and effects when modifying the chat and terminal components, as changes to scrolling behavior may require updates to the respective useEffects.
+
+---
+
+## 2026-03-20 14:36:14 UTC — `0a37df7`
+> Extract recordConversationExchange and add agent conversation tests
+
+- Extract recordConversationExchange pure function to agent-actions.ts
+- Use it in both buildMessageAgentCallback and buildHandoffAgentCallback in App.tsx
+- Fix subtle bug: use identity comparison to avoid updating unrelated links
+- Add comprehensive tests for two-agent conversation flow:
+  - Single exchange creates new link
+  - Multi-turn conversation accumulates messages
+  - Spawn link updated on first exchange (no duplicates)
+  - Separate conversations per agent pair
+  - UI visibility (sender/content format, messageCount badge)
+  - End-to-end: spawn → multi-turn conversation lifecycle
+  - Worker-to-worker handoff conversation recording
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **Files Changed**: The commit modifies `App.tsx`, `agent-actions.ts`, and `agent-actions.test.ts`. The primary change is the extraction of the `recordConversationExchange` function into `agent-actions.ts` for better code organization and reusability.
+
+- **New Functionality**: Introduces the `recordConversationExchange` function, which handles the recording of message exchanges between agents, updating existing links or creating new ones as necessary.
+
+- **Bug Fix**: Addresses a subtle bug by using identity comparison to ensure that unrelated message links are not updated when a new exchange occurs.
+
+- **Refactoring**: The logic for updating message links in `App.tsx` is refactored to utilize the new `recordConversationExchange` function, simplifying the state update logic and improving maintainability.
+
+- **Testing**: Comprehensive tests are added for various conversation scenarios, including single exchanges, multi-turn conversations, and UI visibility aspects, ensuring that the new functionality works as intended.
+
+- **Design Patterns**: The commit employs an immutable update pattern suitable for React's state management, returning new arrays rather than mutating existing ones, which is crucial for maintaining state consistency in React applications.
+
+- **Future Considerations**: Developers should be aware of the new `recordConversationExchange` function when modifying conversation logic, as it centralizes the handling of message links and ensures consistent behavior across different parts of the application.
