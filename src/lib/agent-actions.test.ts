@@ -48,6 +48,14 @@ describe('renameAgent — state-based checks', () => {
     expect(updateAgent).toHaveBeenCalledWith('w1', { name: 'New Name' });
   });
 
+  it('returns a success message containing both old and new names', async () => {
+    const worker = makeAgent({ id: 'w1', name: 'Old Name' });
+    const result = await renameAgent([worker], 'mgr1', 'w1', 'New Name', vi.fn(), vi.fn());
+    expect(result).toContain('Old Name');
+    expect(result).toContain('New Name');
+    expect(result).toContain('renamed');
+  });
+
   it('records the rename in episodic memory', async () => {
     const worker = makeAgent({ id: 'w1', name: 'Alpha' });
     const updateAgent = vi.fn();
@@ -173,6 +181,19 @@ describe('createSpawnMessageLink — spawn message recorded', () => {
     expect(link.lastMessage).toBe('Research AI safety');
     expect(link.messages).toHaveLength(1);
     expect(link.messages[0]).toEqual({ sender: 'Manager Bot', content: 'Research AI safety' });
+  });
+
+  it('handles an empty task string', () => {
+    const link = createSpawnMessageLink('mgr1', 'w1', 'Manager', '');
+    expect(link.lastMessage).toBe('');
+    expect(link.messages[0].content).toBe('');
+  });
+
+  it('preserves special characters in the task', () => {
+    const task = 'Analyse "complex" data & produce <report>';
+    const link = createSpawnMessageLink('mgr1', 'w1', 'Manager', task);
+    expect(link.lastMessage).toBe(task);
+    expect(link.messages[0].content).toBe(task);
   });
 });
 
