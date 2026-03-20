@@ -424,3 +424,21 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - **Design Patterns**: The commit employs an immutable update pattern suitable for React's state management, returning new arrays rather than mutating existing ones, which is crucial for maintaining state consistency in React applications.
 
 - **Future Considerations**: Developers should be aware of the new `recordConversationExchange` function when modifying conversation logic, as it centralizes the handling of message links and ensures consistent behavior across different parts of the application.
+
+---
+
+## 2026-03-20 15:01:21 UTC — `1788800`
+> Hide live mode internal messages from chat UI
+
+Filter [Live Mode] continuation prompts and IDLE responses from the
+message rendering so they are handled behind the scenes. Messages
+remain in agent state for AI model context.
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- The commit modifies the `App.tsx` file to filter out specific messages from the chat UI in the AI desktop application.
+- It introduces a filtering mechanism that hides messages from the user that start with '[Live Mode]' and assistant messages that are simply 'IDLE'.
+- The filtering is achieved using two `.filter()` calls on the `activeAgent.messages` array before rendering the messages.
+- The design decision to keep these messages in the agent state ensures that they are still available for the AI model's context, maintaining functionality while improving UI clarity.
+- Future developers should be aware of the filtering logic in the message rendering process, as it directly affects what users see in the chat interface.
+- The commit does not introduce new features or bug fixes but refines the existing message display logic for better user experience.
