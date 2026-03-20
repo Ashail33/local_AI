@@ -954,6 +954,41 @@ export default function App() {
       return `Connected: ${fromAgent.name} → ${toAgent.name}. ${fromAgent.name} can now hand off work to ${toAgent.name} using handoff_to_agent.`;
     };
 
+  // ── Rename agent callback ──────────────────────────────────────────────────
+
+  /**
+   * Called when a manager agent invokes the rename_agent tool.
+   * Updates the agent's display name in React state so the UI tabs and graph
+   * view reflect the new name immediately.
+   */
+  const buildRenameAgentCallback = (managerId: string) =>
+    async (agentId: string, newName: string): Promise<string> => {
+      const target = agentsRef.current.find(a => a.id === agentId);
+      if (!target) return `Error: Agent with ID "${agentId}" not found.`;
+
+      const oldName = target.name;
+      updateAgent(agentId, { name: newName });
+      appendEpisodicMemory(managerId, `Renamed agent "${oldName}" → "${newName}"`);
+      return `Agent renamed from "${oldName}" to "${newName}".`;
+    };
+
+  // ── Set agent prompt callback ──────────────────────────────────────────────
+
+  /**
+   * Called when a manager agent invokes the set_agent_prompt tool.
+   * Updates the agent's custom system prompt so the next LLM interaction
+   * uses the new instructions.
+   */
+  const buildSetAgentPromptCallback = (managerId: string) =>
+    async (agentId: string, prompt: string): Promise<string> => {
+      const target = agentsRef.current.find(a => a.id === agentId);
+      if (!target) return `Error: Agent with ID "${agentId}" not found.`;
+
+      updateAgent(agentId, { systemPrompt: prompt });
+      appendEpisodicMemory(managerId, `Set system prompt for agent "${target.name}"`);
+      return `System prompt updated for agent "${target.name}" (ID: ${agentId}). The new prompt will take effect on the agent's next interaction.`;
+    };
+
   // ── Episodic memory helper ──────────────────────────────────────────────────
 
   /** Append a step entry to an agent's episodic memory progress log. */
@@ -1102,6 +1137,8 @@ export default function App() {
               : undefined,
           onListAgents: agent.role === 'manager' ? buildListAgentsCallback(agentId) : undefined,
           onConnectAgents: agent.role === 'manager' ? buildConnectAgentsCallback(agentId) : undefined,
+          onRenameAgent: agent.role === 'manager' ? buildRenameAgentCallback(agentId) : undefined,
+          onSetAgentPrompt: agent.role === 'manager' ? buildSetAgentPromptCallback(agentId) : undefined,
           onRequestSignoff:
             agent.role === 'manager' && agent.recursive
               ? buildRequestSignoffCallback(agentId)
@@ -1194,6 +1231,8 @@ export default function App() {
           onMessageAgent: buildMessageAgentCallback(agentId, agent.name),
           onListAgents: buildListAgentsCallback(agentId),
           onConnectAgents: buildConnectAgentsCallback(agentId),
+          onRenameAgent: buildRenameAgentCallback(agentId),
+          onSetAgentPrompt: buildSetAgentPromptCallback(agentId),
           onRequestSignoff: agent.recursive ? buildRequestSignoffCallback(agentId) : undefined,
           onCritiqueOutput: buildCritiqueCallback(agentId),
           onAutoRunScript: buildAutoRunScriptCallback(agentId),

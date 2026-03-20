@@ -328,6 +328,34 @@ const managerToolDeclarations: FunctionDeclaration[] = [
       required: ['output'],
     },
   },
+  {
+    name: 'rename_agent',
+    description:
+      'Rename an existing agent. The new name is immediately visible in the UI tabs and graph view.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        agentId: { type: Type.STRING, description: 'The ID of the agent to rename.' },
+        newName: { type: Type.STRING, description: 'The new display name for the agent.' },
+      },
+      required: ['agentId', 'newName'],
+    },
+  },
+  {
+    name: 'set_agent_prompt',
+    description:
+      'Set or update the custom system prompt of an existing agent. ' +
+      'This controls the agent\'s behaviour, personality, and task instructions. ' +
+      'The prompt takes effect on the agent\'s next interaction.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        agentId: { type: Type.STRING, description: 'The ID of the agent whose prompt to set.' },
+        prompt: { type: Type.STRING, description: 'The new system prompt / instructions for the agent.' },
+      },
+      required: ['agentId', 'prompt'],
+    },
+  },
 ];
 
 /** Tool available to non-manager agents to forward work to another agent in the pipeline. */
@@ -483,6 +511,10 @@ export interface ProcessChatOptions {
   onListAgents?: () => Promise<AgentRef[]>;
   /** Called when the manager invokes connect_agents. Returns a confirmation string. */
   onConnectAgents?: (fromAgentId: string, toAgentId: string) => Promise<string>;
+  /** Called when the manager invokes rename_agent. Returns a confirmation string. */
+  onRenameAgent?: (agentId: string, newName: string) => Promise<string>;
+  /** Called when the manager invokes set_agent_prompt. Returns a confirmation string. */
+  onSetAgentPrompt?: (agentId: string, prompt: string) => Promise<string>;
   /** Custom user-defined context / task framing appended to the system instruction. */
   customSystemPrompt?: string;
   /** When true (recursive manager), the agent receives the request_signoff tool. */
@@ -648,8 +680,9 @@ function buildSystemInstruction(
       'Orchestration workflow:',
       "  Step 1 — Call 'list_agents' to discover all currently available agents and their exact IDs.",
       "  Step 2 — Break the task into clear, well-defined sub-tasks. For each sub-task, either call 'spawn_agent' to create a specialist worker or call 'message_agent' to delegate to an existing agent.",
-      "  Step 3 — Optionally, call 'connect_agents' to establish a pipeline so one worker can hand its output directly to another worker.",
-      "  Step 4 — Collect results from all workers via 'message_agent', synthesise the findings, and deliver a final answer or summary to the user.",
+      "  Step 3 — Optionally, call 'rename_agent' to give an agent a more descriptive name, or 'set_agent_prompt' to configure its behaviour and instructions.",
+      "  Step 4 — Optionally, call 'connect_agents' to establish a pipeline so one worker can hand its output directly to another worker.",
+      "  Step 5 — Collect results from all workers via 'message_agent', synthesise the findings, and deliver a final answer or summary to the user.",
       '',
       'Rules you must always follow:',
       '  • NEVER write or generate code, Python scripts, shell commands, or any implementation yourself.',
@@ -751,6 +784,8 @@ export async function processChatTurn(
     onMessageAgent,
     onListAgents,
     onConnectAgents,
+    onRenameAgent,
+    onSetAgentPrompt,
     customSystemPrompt = '',
     isRecursive = false,
     onRequestSignoff,
@@ -1181,6 +1216,36 @@ export async function processChatTurn(
           response = await chat.sendMessage({ message: `connect_agents result: ${result}` });
         } catch (e: any) {
           response = await chat.sendMessage({ message: `connect_agents failed: ${e.message}` });
+        }
+      }
+    } else if (call.name === 'rename_agent') {
+      if (!onRenameAgent) {
+        response = await chat.sendMessage({ message: 'rename_agent is not available in this context.' });
+      } else {
+        try {
+          onLog(`Manager renaming agent ${call.args.agentId} to "${call.args.newName}"`);
+          const result = await onRenameAgent(
+            call.args.agentId as string,
+            call.args.newName as string,
+          );
+          response = await chat.sendMessage({ message: `rename_agent result: ${result}` });
+        } catch (e: any) {
+          response = await chat.sendMessage({ message: `rename_agent failed: ${e.message}` });
+        }
+      }
+    } else if (call.name === 'set_agent_prompt') {
+      if (!onSetAgentPrompt) {
+        response = await chat.sendMessage({ message: 'set_agent_prompt is not available in this context.' });
+      } else {
+        try {
+          onLog(`Manager setting system prompt for agent ${call.args.agentId}`);
+          const result = await onSetAgentPrompt(
+            call.args.agentId as string,
+            call.args.prompt as string,
+          );
+          response = await chat.sendMessage({ message: `set_agent_prompt result: ${result}` });
+        } catch (e: any) {
+          response = await chat.sendMessage({ message: `set_agent_prompt failed: ${e.message}` });
         }
       }
     } else if (call.name === 'request_signoff') {
