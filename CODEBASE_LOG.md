@@ -442,3 +442,20 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - The design decision to keep these messages in the agent state ensures that they are still available for the AI model's context, maintaining functionality while improving UI clarity.
 - Future developers should be aware of the filtering logic in the message rendering process, as it directly affects what users see in the chat interface.
 - The commit does not introduce new features or bug fixes but refines the existing message display logic for better user experience.
+
+---
+
+## 2026-03-20 15:34:32 UTC — `f4df411`
+> Address code review: remove no-op setShowGraphView calls
+
+Simplified the add agent functions by removing the setShowGraphView(false)
+call entirely. The view state no longer changes when adding agents, so
+users stay in whichever view they're in (graph or chat).
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- The commit modifies the `src/App.tsx` file by removing unnecessary calls to `setShowGraphView(false)` in the agent addition functions (`addAgent`, `addManager`, `addAuthoriser`, `addCritic`).
+- The removal of these calls simplifies the code and maintains the current view state (either graph or chat) when adding new agents, enhancing user experience by preventing unintended view changes.
+- No new features or bug fixes were introduced; the change is purely a refactor aimed at improving code clarity and reducing redundancy.
+- The design decision reflects a user-centered approach, allowing users to remain in their preferred view while interacting with the application.
+- Future developers should be aware that the view state management has been streamlined, and any further modifications to view transitions should consider user context to avoid disrupting the user experience.

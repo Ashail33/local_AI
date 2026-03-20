@@ -134,13 +134,30 @@ export default function AgentGraph({
     origY: number;
   } | null>(null);
 
-  // Re-layout only for newly added agents; preserve user-dragged positions
+  // Re-layout only for newly added agents; preserve user-dragged positions.
+  // For child agents whose parent was dragged, offset the computed position so
+  // the new node appears near its parent's actual (dragged) location.
   useEffect(() => {
     const fresh = computeLayout(agents);
     setPositions(prev => {
       const next = new Map(prev);
       for (const [id, pos] of fresh) {
-        if (!next.has(id)) next.set(id, pos);
+        if (!next.has(id)) {
+          const agent = agents.find(a => a.id === id);
+          if (agent?.parentId && prev.has(agent.parentId)) {
+            const parentActual = prev.get(agent.parentId)!;
+            const parentFresh = fresh.get(agent.parentId);
+            if (parentFresh) {
+              const dx = parentActual.x - parentFresh.x;
+              const dy = parentActual.y - parentFresh.y;
+              next.set(id, { x: pos.x + dx, y: pos.y + dy });
+            } else {
+              next.set(id, pos);
+            }
+          } else {
+            next.set(id, pos);
+          }
+        }
       }
       // Remove stale entries
       for (const id of next.keys()) {

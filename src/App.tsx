@@ -12,8 +12,6 @@ import type { AgentRef } from './lib/ai';
 import {
   renameAgent as renameAgentAction,
   setAgentPrompt as setAgentPromptAction,
-  computeSpawnLinks,
-  createSpawnMessageLink,
   connectAgents as connectAgentsAction,
   listAgents as listAgentsAction,
   recordConversationExchange,
@@ -257,28 +255,24 @@ export default function App() {
     const agent = createAgent();
     setAgents(prev => [...prev, agent]);
     setActiveAgentId(agent.id);
-    setShowGraphView(false);
   };
 
   const addManager = () => {
     const agent = createAgent(undefined, 'manager', null);
     setAgents(prev => [...prev, agent]);
     setActiveAgentId(agent.id);
-    setShowGraphView(false);
   };
 
   const addAuthoriser = () => {
     const agent = createAgent(undefined, 'authoriser', null);
     setAgents(prev => [...prev, agent]);
     setActiveAgentId(agent.id);
-    setShowGraphView(false);
   };
 
   const addCritic = () => {
     const agent = createAgent(undefined, 'critic', null);
     setAgents(prev => [...prev, agent]);
     setActiveAgentId(agent.id);
-    setShowGraphView(false);
   };
 
   const removeAgent = (id: string, e: React.MouseEvent) => {
@@ -443,14 +437,19 @@ export default function App() {
       );
       // Record spawn in manager's episodic memory
       appendEpisodicMemory(managerId, `Spawned worker "${newWorker.name}" for task: ${truncateText(task, 80)}`);
-      // Record spawn link
-      setMessageLinks(prev => [
-        ...prev,
-        createSpawnMessageLink(managerId, newWorker.id, managerAgent?.name ?? 'Manager', task),
-      ]);
-      // Automatically authorize bidirectional communication so the worker can
-      // message the manager back via handoff_to_agent.
-      setConnectedLinks(prev => computeSpawnLinks(prev, managerId, newWorker.id));
+      // Create the message link & connected link using the same path as the
+      // graph UI (the "Link Agents" button calls handleCreateLink).
+      handleCreateLink(managerId, newWorker.id);
+      // Authorize the reverse direction so the worker can message back.
+      handleCreateLink(newWorker.id, managerId);
+      // Enrich the forward link with the spawn task content.
+      setMessageLinks(prev =>
+        prev.map(l =>
+          l.fromId === managerId && l.toId === newWorker.id
+            ? { ...l, lastMessage: task, messages: [{ sender: managerAgent?.name ?? 'Manager', content: task }] }
+            : l,
+        ),
+      );
 
       // Immediately execute the initial task so the manager receives real results.
       setAgents(prev =>
@@ -911,29 +910,17 @@ export default function App() {
   /**
    * Called when a manager agent uses the connect_agents tool.
    * Creates an authorized one-way communication channel fromAgentId → toAgentId
-   * and records the visual link in the graph.
+   * and records the visual link in the graph using the same path as the graph UI.
    */
   const buildConnectAgentsCallback = (managerId: string) =>
     async (fromAgentId: string, toAgentId: string): Promise<string> => {
       const fromAgent = agentsRef.current.find(a => a.id === fromAgentId);
       const toAgent = agentsRef.current.find(a => a.id === toAgentId);
-      const managerAgent = agentsRef.current.find(a => a.id === managerId);
       if (!fromAgent) return `Error: Agent with ID "${fromAgentId}" not found.`;
       if (!toAgent) return `Error: Agent with ID "${toAgentId}" not found.`;
 
-      setConnectedLinks(prev => {
-        const exists = prev.some(l => l.fromId === fromAgentId && l.toId === toAgentId);
-        if (exists) return prev;
-        return [...prev, { fromId: fromAgentId, toId: toAgentId }];
-      });
-
-      // Also add a visual edge to the graph (with 0 message count until they actually talk)
-      const linkNote = `Connected by ${managerAgent?.name ?? 'manager'}`;
-      setMessageLinks(prev => {
-        const exists = prev.some(l => l.fromId === fromAgentId && l.toId === toAgentId);
-        if (exists) return prev;
-        return [...prev, { fromId: fromAgentId, toId: toAgentId, messageCount: 0, lastMessage: linkNote, messages: [] }];
-      });
+      // Use the same link creation function as the graph UI
+      handleCreateLink(fromAgentId, toAgentId);
 
       return `Connected: ${fromAgent.name} → ${toAgent.name}. ${fromAgent.name} can now hand off work to ${toAgent.name} using handoff_to_agent.`;
     };
