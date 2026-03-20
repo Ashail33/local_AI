@@ -12,7 +12,12 @@ export const DEFAULT_GEMINI_MODELS: Model[] = [
 ];
 
 /** Well-known Ollama models users can download. */
-export const POPULAR_OLLAMA_MODELS: Array<{ id: string; name: string; size: string }> = [
+export const POPULAR_OLLAMA_MODELS: Array<{ id: string; name: string; size: string; recommended?: boolean }> = [
+  // ── Recommended: 4-bit quantised models (best balance of speed & quality) ──
+  { id: 'mistral:7b-instruct-q4_0',        name: 'Mistral 7B Instruct (4-bit) ★',      size: '~4.1 GB', recommended: true },
+  { id: 'llama3.1:8b-instruct-q4_0',       name: 'Llama 3.1 8B Instruct (4-bit) ★',   size: '~4.7 GB', recommended: true },
+  { id: 'deepseek-coder:6.7b-instruct-q4_0', name: 'DeepSeek Coder 6.7B (4-bit) ★',   size: '~3.8 GB', recommended: true },
+  // ── Standard models ─────────────────────────────────────────────────────────
   { id: 'llama3.2',             name: 'Llama 3.2 (3B)',         size: '~2 GB' },
   { id: 'llama3.2:1b',          name: 'Llama 3.2 (1B)',         size: '~1 GB' },
   { id: 'mistral',              name: 'Mistral 7B',             size: '~4 GB' },
