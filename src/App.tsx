@@ -255,29 +255,24 @@ export default function App() {
     const agent = createAgent();
     setAgents(prev => [...prev, agent]);
     setActiveAgentId(agent.id);
-    // Stay in graph view so the user can see the new agent node
-    if (!showGraphView) setShowGraphView(false);
   };
 
   const addManager = () => {
     const agent = createAgent(undefined, 'manager', null);
     setAgents(prev => [...prev, agent]);
     setActiveAgentId(agent.id);
-    if (!showGraphView) setShowGraphView(false);
   };
 
   const addAuthoriser = () => {
     const agent = createAgent(undefined, 'authoriser', null);
     setAgents(prev => [...prev, agent]);
     setActiveAgentId(agent.id);
-    if (!showGraphView) setShowGraphView(false);
   };
 
   const addCritic = () => {
     const agent = createAgent(undefined, 'critic', null);
     setAgents(prev => [...prev, agent]);
     setActiveAgentId(agent.id);
-    if (!showGraphView) setShowGraphView(false);
   };
 
   const removeAgent = (id: string, e: React.MouseEvent) => {
