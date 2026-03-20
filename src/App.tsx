@@ -1954,7 +1954,10 @@ export default function App() {
 
             {/* Messages */}
             <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-5 space-y-5">
-              {activeAgent.messages.map((msg, i) => (
+              {activeAgent.messages
+                .filter(msg => !(msg.role === 'user' && msg.content.startsWith('[Live Mode]')))
+                .filter(msg => !(msg.role === 'assistant' && msg.content.trim() === 'IDLE'))
+                .map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div
                     className={`max-w-3xl rounded-2xl px-4 py-3 ${
