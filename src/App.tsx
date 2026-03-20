@@ -10,6 +10,14 @@ import { initPython, runPythonScript } from './lib/python';
 import { processChatTurn } from './lib/ai';
 import type { AgentRef } from './lib/ai';
 import {
+  renameAgent as renameAgentAction,
+  setAgentPrompt as setAgentPromptAction,
+  computeSpawnLinks,
+  createSpawnMessageLink,
+  connectAgents as connectAgentsAction,
+  listAgents as listAgentsAction,
+} from './lib/agent-actions';
+import {
   listOllamaModels, pullOllamaModel, testOllamaConnection,
   getOllamaUrl, setOllamaUrl,
   getGeminiApiKey, setGeminiApiKey,
@@ -425,20 +433,11 @@ export default function App() {
       // Record spawn link
       setMessageLinks(prev => [
         ...prev,
-        { fromId: managerId, toId: newWorker.id, messageCount: 0, lastMessage: task, messages: [{ sender: managerAgent?.name ?? 'Manager', content: task }] },
+        createSpawnMessageLink(managerId, newWorker.id, managerAgent?.name ?? 'Manager', task),
       ]);
       // Automatically authorize bidirectional communication so the worker can
       // message the manager back via handoff_to_agent.
-      setConnectedLinks(prev => {
-        const links = [...prev];
-        if (!links.some(l => l.fromId === newWorker.id && l.toId === managerId)) {
-          links.push({ fromId: newWorker.id, toId: managerId });
-        }
-        if (!links.some(l => l.fromId === managerId && l.toId === newWorker.id)) {
-          links.push({ fromId: managerId, toId: newWorker.id });
-        }
-        return links;
-      });
+      setConnectedLinks(prev => computeSpawnLinks(prev, managerId, newWorker.id));
 
       // Immediately execute the initial task so the manager receives real results.
       setAgents(prev =>
@@ -920,9 +919,7 @@ export default function App() {
    */
   const buildListAgentsCallback = (managerId: string) =>
     async (): Promise<AgentRef[]> =>
-      agentsRef.current
-        .filter(a => a.id !== managerId)
-        .map(a => ({ id: a.id, name: a.name, role: a.role }));
+      listAgentsAction(agentsRef.current, managerId);
 
   /**
    * Called when a manager agent uses the connect_agents tool.
@@ -962,15 +959,8 @@ export default function App() {
    * view reflect the new name immediately.
    */
   const buildRenameAgentCallback = (managerId: string) =>
-    async (agentId: string, newName: string): Promise<string> => {
-      const target = agentsRef.current.find(a => a.id === agentId);
-      if (!target) return `Error: Agent with ID "${agentId}" not found.`;
-
-      const oldName = target.name;
-      updateAgent(agentId, { name: newName });
-      appendEpisodicMemory(managerId, `Renamed agent "${oldName}" → "${newName}"`);
-      return `Agent renamed from "${oldName}" to "${newName}".`;
-    };
+    async (agentId: string, newName: string): Promise<string> =>
+      renameAgentAction(agentsRef.current, managerId, agentId, newName, updateAgent, appendEpisodicMemory);
 
   // ── Set agent prompt callback ──────────────────────────────────────────────
 
@@ -980,14 +970,8 @@ export default function App() {
    * uses the new instructions.
    */
   const buildSetAgentPromptCallback = (managerId: string) =>
-    async (agentId: string, prompt: string): Promise<string> => {
-      const target = agentsRef.current.find(a => a.id === agentId);
-      if (!target) return `Error: Agent with ID "${agentId}" not found.`;
-
-      updateAgent(agentId, { systemPrompt: prompt });
-      appendEpisodicMemory(managerId, `Set system prompt for agent "${target.name}"`);
-      return `System prompt updated for agent "${target.name}" (ID: ${agentId}). The new prompt will take effect on the agent's next interaction.`;
-    };
+    async (agentId: string, prompt: string): Promise<string> =>
+      setAgentPromptAction(agentsRef.current, managerId, agentId, prompt, updateAgent, appendEpisodicMemory);
 
   // ── Episodic memory helper ──────────────────────────────────────────────────
 
