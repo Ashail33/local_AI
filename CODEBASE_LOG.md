@@ -459,3 +459,18 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - No new features or bug fixes were introduced; the change is purely a refactor aimed at improving code clarity and reducing redundancy.
 - The design decision reflects a user-centered approach, allowing users to remain in their preferred view while interacting with the application.
 - Future developers should be aware that the view state management has been streamlined, and any further modifications to view transitions should consider user context to avoid disrupting the user experience.
+
+---
+
+## 2026-03-20 16:17:19 UTC — `0ff608f`
+> Show background-spawned agents in UI: auto-switch to graph view + loading indicator on tabs
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **File Modified**: `src/App.tsx` was updated to enhance the user interface for background-spawned agents.
+- **Feature Addition**: The application now automatically switches to the graph view when a new agent is spawned, allowing users to immediately see the new agent's status.
+- **Loading Indicator**: Introduced a loading state for agents, represented by a new visual indicator (emerald-colored dot) when an agent is loading, and a separate indicator (green-colored dot) when the agent is live and not loading.
+- **Conditional Rendering**: Updated the rendering logic to differentiate between loading and live states for agents, improving clarity in the UI.
+- **Accessibility**: Added `aria-label` attributes to loading and live indicators for better accessibility support.
+- **State Management**: The `setShowGraphView` function is called immediately after a new agent is added, ensuring a seamless user experience.
+- **Future Considerations**: Developers should be aware of the new loading state and ensure that any future agent-related features account for both loading and live states to maintain UI consistency.

@@ -418,6 +418,8 @@ export default function App() {
         }
       }
       setAgents(prev => [...prev, newWorker]);
+      // Switch to the graph view so the user can see the new agent appear
+      setShowGraphView(true);
       // Notify the manager's chat thread that an agent was spawned
       setAgents(prev =>
         prev.map(a =>
@@ -1424,8 +1426,11 @@ export default function App() {
               {agent.role === 'critic' && (
                 <Eye className="w-3 h-3 text-cyan-400 shrink-0" />
               )}
-              {agent.isLive && (
-                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
+              {agent.isLoading && (
+                <span aria-label="Agent is loading" className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+              )}
+              {agent.isLive && !agent.isLoading && (
+                <span aria-label="Agent is live" className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
               )}
               {editingTabId === agent.id ? (
                 <input
