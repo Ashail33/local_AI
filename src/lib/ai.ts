@@ -378,11 +378,22 @@ const requestSignoffTool: FunctionDeclaration = {
  * The model outputs JSON with a `decision` field that drives the ReAct loop.
  */
 interface OllamaReActDecision {
-  decision: 'USE_TOOL' | 'THINK' | 'FINISH';
+  decision: 'USE_TOOL' | 'THINK' | 'PLAN' | 'FINISH';
   tool?: string;
   input?: Record<string, unknown>;
   thought?: string;
   response?: string;
+  /** Ordered list of steps for a PLAN decision. */
+  plan?: string[];
+  /**
+   * Optional task-memory snapshot included in any decision.
+   * The loop tracks this across steps and injects it into continuation prompts.
+   */
+  memory?: {
+    goal?: string;
+    completed?: string[];
+    remaining?: string[];
+  };
 }
 
 /**
@@ -435,7 +446,11 @@ async function ollamaChat(
   return (data.message?.content as string) || '';
 }
 
-// ── Main export ───────────────────────────────────────────────────────────────
+/** Format accumulated task memory into a short reminder string for continuation prompts. */
+function formatTaskMemoryNote(memory: { goal: string; completed: string[]; remaining: string[] }): string {
+  if (memory.remaining.length === 0) return '';
+  return `\n\nTask memory — completed: [${memory.completed.join(', ')}]; remaining: [${memory.remaining.join(', ')}].`;
+}
 
 /** A lightweight reference to an agent used in tool callbacks. */
 export interface AgentRef {
@@ -544,23 +559,45 @@ function buildOllamaSystemInstruction(
 
   if (availableTools.length > 0) {
     const toolDocs: Record<string, string> = {
-      read_file:  'read_file — read a workspace file. Input: {"filename": "path/to/file.txt"}',
-      write_file: 'write_file — write text to a workspace file. Input: {"filename": "path.txt", "content": "text"}',
-      list_files: 'list_files — list all files in the workspace. Input: {}',
-      web_search: 'web_search — search the internet. Input: {"query": "search terms"}',
+      read_file:        'read_file — read a workspace file. Input: {"filename": "path/to/file.txt"}',
+      write_file:       'write_file — write text to a workspace file. Input: {"filename": "path.txt", "content": "text"}',
+      list_files:       'list_files — list all files in the workspace. Input: {}',
+      web_search:       'web_search — search the internet. Input: {"query": "search terms"}',
       handoff_to_agent: 'handoff_to_agent — pass work to another agent. Input: {"agentId": "<id>", "message": "..."}',
     };
 
     lines.push(
-      '\n\nYou have access to the following tools. To use a tool, output ONLY valid JSON (no extra text):',
-      '{"decision":"USE_TOOL","tool":"<tool_name>","input":{<args>},"thought":"<why you are calling this tool>"}',
-      'When you have a final answer, output ONLY:',
-      '{"decision":"FINISH","response":"<your complete answer>","thought":"<brief summary>"}',
-      'If you need to reason without taking action, output ONLY:',
-      '{"decision":"THINK","thought":"<your reasoning — then decide what to do next>"}',
-      '\nAvailable tools:',
+      '\n\nYou have access to the following tools. Every response MUST be valid JSON (no extra text before or after the JSON object).',
+      '',
+      '── Decision types ──────────────────────────────────────────────────────────',
+      '1. PLAN — use this FIRST for any multi-step task. Output a plan before taking action:',
+      '   {"decision":"PLAN","plan":["step 1","step 2",...],"thought":"overall approach",',
+      '    "memory":{"goal":"<overall goal>","completed":[],"remaining":["step 1","step 2",...]}}',
+      '   (Skip PLAN only for trivial single-step queries, e.g. "list my files".)',
+      '',
+      '2. USE_TOOL — call a tool to gather information or take action:',
+      '   {"decision":"USE_TOOL","tool":"<name>","input":{<args>},"thought":"<why>",',
+      '    "memory":{"goal":"<goal>","completed":[...],"remaining":[...]}}',
+      '',
+      '3. THINK — reason without acting (use sparingly):',
+      '   {"decision":"THINK","thought":"<reasoning>",',
+      '    "memory":{"goal":"<goal>","completed":[...],"remaining":[...]}}',
+      '',
+      '4. FINISH — deliver your final answer:',
+      '   {"decision":"FINISH","response":"<complete answer>","thought":"<brief summary>"}',
+      '',
+      '── Rules you MUST follow ───────────────────────────────────────────────────',
+      '• For multi-step tasks, start with PLAN before taking any action.',
+      '• ALWAYS call read_file before write_file on the same file. Never overwrite without reading first.',
+      '• Work incrementally — edit ONE file at a time. Never rewrite an entire project in one step.',
+      '• Break large tasks into small sub-tasks; tackle them one by one.',
+      '• After writing a file, review it (USE_TOOL read_file) before proceeding.',
+      '• Use the "memory" field in every decision to track goal / completed / remaining steps.',
+      '• Iterate: write → review → fix → repeat until the task is complete.',
+      '• Keep file reads focused: if a file is large, note what you need from it before reading.',
+      '',
+      '── Available tools ─────────────────────────────────────────────────────────',
       ...availableTools.map(t => `  • ${toolDocs[t] ?? t}`),
-      '\nIMPORTANT: Every response MUST be valid JSON matching one of the three formats above.',
     );
   }
 
@@ -773,7 +810,14 @@ export async function processChatTurn(
     // With tools: ReAct loop
     onLog(`Using Ollama model: ${modelId} (ReAct mode)`);
     const reActMessages = [...baseMessages, { role: 'user', content: prompt }];
-    const MAX_REACT_STEPS = 10;
+    const MAX_REACT_STEPS = 15;
+
+    // Accumulated task memory across steps (goal / completed / remaining)
+    let taskMemory: { goal: string; completed: string[]; remaining: string[] } = {
+      goal: '',
+      completed: [],
+      remaining: [],
+    };
 
     for (let step = 0; step < MAX_REACT_STEPS; step++) {
       const rawText = await ollamaChat(modelId, reActMessages, ollamaSystemPrompt);
@@ -784,8 +828,30 @@ export async function processChatTurn(
         return { role: 'assistant', content: rawText };
       }
 
+      // Merge any memory update carried in the decision
+      if (decision.memory) {
+        if (decision.memory.goal)      taskMemory.goal      = decision.memory.goal;
+        if (decision.memory.completed) taskMemory.completed = decision.memory.completed;
+        if (decision.memory.remaining) taskMemory.remaining = decision.memory.remaining;
+      }
+
       if (decision.decision === 'FINISH') {
         return { role: 'assistant', content: decision.response ?? rawText };
+      }
+
+      if (decision.decision === 'PLAN') {
+        const steps = (decision.plan ?? []).join('; ') || (decision.thought ?? '');
+        onLog(`[Ollama] Plan: ${steps}`);
+        reActMessages.push({ role: 'assistant', content: rawText });
+        const memoryNote = formatTaskMemoryNote(taskMemory);
+        const remainingHint = taskMemory.remaining.length > 0
+          ? ` Remaining steps: ${taskMemory.remaining.join(', ')}.`
+          : '';
+        reActMessages.push({
+          role: 'user',
+          content: `Plan acknowledged.${remainingHint} Proceed with step 1 now — start with read_file or list_files if you need workspace context.${memoryNote}`,
+        });
+        continue;
       }
 
       if (decision.decision === 'THINK') {
@@ -841,7 +907,11 @@ export async function processChatTurn(
           toolResult = `Tool "${toolName}" failed: ${e.message}`;
         }
 
-        reActMessages.push({ role: 'user', content: `Tool result for ${toolName}: ${toolResult}\n\nContinue with your task.` });
+        // Build a continuation prompt that includes the current task-memory state
+        reActMessages.push({
+          role: 'user',
+          content: `Tool result for ${toolName}: ${toolResult}\n\nContinue with your task.${formatTaskMemoryNote(taskMemory)}`,
+        });
       }
     }
 

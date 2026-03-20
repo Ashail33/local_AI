@@ -314,3 +314,41 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - **Design Patterns**: Utilized functional programming patterns with hooks (e.g., `useCallback`) to manage state updates for agents and their episodic memory, ensuring efficient re-renders.
 
 - **Future Considerations**: Developers should be aware of the new 'critic' role and its interaction with the manager role, particularly in how critiques are requested and logged. The episodic memory feature may require additional UI considerations for displaying logs effectively.
+
+---
+
+## 2026-03-20 12:03:38 UTC — `0d4ae02`
+> feat: implement local AI architecture improvements
+
+- models.ts: add 4-bit quantised recommended models (Mistral 7B,
+  Llama 3.1 8B, DeepSeek Coder 6.7B) at top of POPULAR_OLLAMA_MODELS
+  with recommended flag
+- ai.ts: extend OllamaReActDecision with PLAN decision type, plan[]
+  array, and memory snapshot (goal/completed/remaining)
+- ai.ts: add formatTaskMemoryNote helper to DRY up memory formatting
+- ai.ts: rewrite buildOllamaSystemInstruction to enforce plan-first,
+  read-before-edit, incremental file editing, and iteration-loop rules
+- ai.ts: update ReAct loop to handle PLAN step, track and merge task
+  memory across steps, inject memory note in continuation prompts,
+  and raise MAX_REACT_STEPS from 10 to 15
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **Files Changed**: 
+  - `models.ts`: Added new 4-bit quantized models (Mistral 7B, Llama 3.1 8B, DeepSeek Coder 6.7B) to `POPULAR_OLLAMA_MODELS` with a recommended flag.
+  - `ai.ts`: Extended the `OllamaReActDecision` interface to include a new `PLAN` decision type and a `memory` snapshot structure.
+
+- **New Features**: 
+  - Introduced a `PLAN` decision type to facilitate multi-step tasks, allowing for structured task management.
+  - Added a `formatTaskMemoryNote` helper function to format task memory for better readability in prompts.
+
+- **Refactors**: 
+  - Rewrote `buildOllamaSystemInstruction` to enforce a plan-first approach and established rules for incremental file editing and iteration loops.
+  - Updated the ReAct loop to handle the new `PLAN` decision type and to merge task memory across steps.
+
+- **Design Decisions**: 
+  - The implementation emphasizes a structured approach to task execution, requiring a plan before actions are taken, which enhances clarity and reduces errors in task management.
+
+- **Developer Notes**: 
+  - Future developers should be aware of the new decision types and memory management patterns introduced, as they will affect how tasks are structured and executed within the AI system.
+  - The increase in `MAX_REACT_STEPS` from 10 to 15 allows for more complex interactions, which may require adjustments in performance considerations.
