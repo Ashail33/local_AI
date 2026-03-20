@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, FunctionDeclaration } from '@google/genai';
-import { readFile, writeFile } from './fs';
+import { readFile, writeFile, listFiles } from './fs';
 import { webSearch } from './search';
 import { getOllamaUrl, getGeminiApiKey } from './models';
 import type { ModelProvider } from './models';
@@ -121,6 +121,16 @@ const readFileTool: FunctionDeclaration = {
   },
 };
 
+const listFilesTool: FunctionDeclaration = {
+  name: 'list_files',
+  description: "List all files currently in the user's local workspace folder. Returns a flat list of relative file paths.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {},
+    required: [],
+  },
+};
+
 const writeFileTool: FunctionDeclaration = {
   name: 'write_file',
   description: "Write text content to a file in the user's local workspace folder. Supports subfolder paths like \"reports/summary.txt\" — intermediate folders are created automatically.",
@@ -205,6 +215,7 @@ const proposePythonScriptTool: FunctionDeclaration = {
 const baseToolDeclarations: FunctionDeclaration[] = [
   readFileTool,
   writeFileTool,
+  listFilesTool,
   createDocumentTool,
   buildToolTool,
   proposePythonScriptTool,
@@ -220,6 +231,7 @@ const baseToolDeclarations: FunctionDeclaration[] = [
  */
 const managerBaseToolDeclarations: FunctionDeclaration[] = [
   readFileTool,
+  listFilesTool,
   createDocumentTool,
   createFolderTool,
 ];
@@ -299,6 +311,23 @@ const managerToolDeclarations: FunctionDeclaration[] = [
       required: ['fromAgentId', 'toAgentId'],
     },
   },
+  {
+    name: 'critique_output',
+    description:
+      'Submit a piece of work or output to a critic agent for structured quality review. ' +
+      'Returns feedback on strengths, issues, and specific recommendations. ' +
+      'Use this when you want an independent assessment of a worker\'s output before finalising.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        output: {
+          type: Type.STRING,
+          description: 'The work, document, code, or analysis to be reviewed by the critic.',
+        },
+      },
+      required: ['output'],
+    },
+  },
 ];
 
 /** Tool available to non-manager agents to forward work to another agent in the pipeline. */
@@ -343,6 +372,41 @@ const requestSignoffTool: FunctionDeclaration = {
 };
 
 // ── Ollama helper ─────────────────────────────────────────────────────────────
+
+/**
+ * Parsed structured decision from an Ollama ReAct response.
+ * The model outputs JSON with a `decision` field that drives the ReAct loop.
+ */
+interface OllamaReActDecision {
+  decision: 'USE_TOOL' | 'THINK' | 'FINISH';
+  tool?: string;
+  input?: Record<string, unknown>;
+  thought?: string;
+  response?: string;
+}
+
+/**
+ * Attempt to extract a structured OllamaReActDecision from the model's raw text.
+ * Tries JSON code blocks first, then a bare JSON object anywhere in the text.
+ * Returns null when no valid decision object can be found.
+ */
+function parseOllamaReActDecision(text: string): OllamaReActDecision | null {
+  // Try fenced code block (```json … ```) first
+  const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  const candidates: string[] = codeBlock ? [codeBlock[1], text] : [text];
+
+  for (const candidate of candidates) {
+    const jsonMatch = candidate.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) continue;
+    try {
+      const obj = JSON.parse(jsonMatch[0]);
+      if (typeof obj.decision === 'string') return obj as OllamaReActDecision;
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
 
 async function ollamaChat(
   model: string,
@@ -422,20 +486,46 @@ export interface ProcessChatOptions {
   onAutoRunScript?: (script: string) => Promise<string>;
   /** When true (manager only), the agent is running in live autonomous mode. */
   isLive?: boolean;
+  /** When true, the agent is a critic whose job is to review and critique outputs. */
+  isCritic?: boolean;
+  /**
+   * Called when a manager invokes critique_output.
+   * Runs the critic agent with the provided output and returns structured feedback.
+   */
+  onCritiqueOutput?: (output: string) => Promise<string>;
+  /**
+   * Called after the agent completes a significant step (tool call, task completion).
+   * The entry is appended to the agent's episodic memory progress log.
+   */
+  onEpisodicMemory?: (entry: string) => void;
 }
 
 /**
- * Build a concise system instruction for Ollama models that have NO tool-calling ability.
- * The prompt must NOT reference any tools; the model should respond directly.
+ * Build a system instruction for Ollama models.
+ * When availableTools is non-empty the prompt describes the ReAct JSON format so
+ * the model can request tool execution.  Without tools the model responds directly.
  */
 function buildOllamaSystemInstruction(
   agentName: string,
   isManager: boolean,
   customSystemPrompt: string,
+  isCritic: boolean = false,
+  availableTools: string[] = [],
 ): string {
   const lines: string[] = [];
 
-  if (isManager) {
+  if (isCritic) {
+    lines.push(
+      `You are ${agentName}, a CRITIC AGENT.`,
+      'Your role is to review work and provide structured, actionable feedback.',
+      'When reviewing, identify: what is correct and well done, what is missing or incorrect, and specific improvements.',
+      'Structure your response as:',
+      'STRENGTHS: <list what is good>',
+      'ISSUES: <list problems or gaps>',
+      'RECOMMENDATIONS: <list specific improvements>',
+      'VERDICT: APPROVE | REVISE',
+    );
+  } else if (isManager) {
     lines.push(
       `You are ${agentName}, an AI manager assistant.`,
       'Help the user by breaking tasks into clear steps, providing structured plans, and summarising results.',
@@ -452,11 +542,33 @@ function buildOllamaSystemInstruction(
     );
   }
 
+  if (availableTools.length > 0) {
+    const toolDocs: Record<string, string> = {
+      read_file:  'read_file — read a workspace file. Input: {"filename": "path/to/file.txt"}',
+      write_file: 'write_file — write text to a workspace file. Input: {"filename": "path.txt", "content": "text"}',
+      list_files: 'list_files — list all files in the workspace. Input: {}',
+      web_search: 'web_search — search the internet. Input: {"query": "search terms"}',
+      handoff_to_agent: 'handoff_to_agent — pass work to another agent. Input: {"agentId": "<id>", "message": "..."}',
+    };
+
+    lines.push(
+      '\n\nYou have access to the following tools. To use a tool, output ONLY valid JSON (no extra text):',
+      '{"decision":"USE_TOOL","tool":"<tool_name>","input":{<args>},"thought":"<why you are calling this tool>"}',
+      'When you have a final answer, output ONLY:',
+      '{"decision":"FINISH","response":"<your complete answer>","thought":"<brief summary>"}',
+      'If you need to reason without taking action, output ONLY:',
+      '{"decision":"THINK","thought":"<your reasoning — then decide what to do next>"}',
+      '\nAvailable tools:',
+      ...availableTools.map(t => `  • ${toolDocs[t] ?? t}`),
+      '\nIMPORTANT: Every response MUST be valid JSON matching one of the three formats above.',
+    );
+  }
+
   if (customSystemPrompt.trim()) {
     lines.push(`\nTask Context & Instructions:\n${customSystemPrompt.trim()}`);
   }
 
-  return lines.join(' ');
+  return lines.join('\n');
 }
 
 function buildSystemInstruction(
@@ -468,10 +580,23 @@ function buildSystemInstruction(
   customSystemPrompt: string = '',
   handoffAgents: AgentRef[] = [],
   isLive: boolean = false,
+  isCritic: boolean = false,
 ): string {
   const lines: string[] = [];
 
-  if (isManager) {
+  if (isCritic) {
+    lines.push(
+      `You are ${agentName}, a CRITIC AGENT.`,
+      'Your sole responsibility is to review and critique work submitted to you.',
+      'Provide structured, honest, and actionable feedback.',
+      'When reviewing any output, always address:',
+      '  • STRENGTHS — what is correct, well-reasoned, or well-written',
+      '  • ISSUES — what is incorrect, missing, ambiguous, or poorly done',
+      '  • RECOMMENDATIONS — specific, actionable steps to improve the work',
+      '  • VERDICT — either "APPROVE" (work meets the standard) or "REVISE" (needs more work)',
+      'Be objective and thorough. Your feedback should help the submitter improve their work.',
+    );
+  } else if (isManager) {
     lines.push(
       `You are ${agentName}, a MANAGER AGENT. Your sole responsibility is to ORCHESTRATE tasks by breaking them down and delegating every sub-task to worker agents.`,
       'You are a coordinator, NOT an implementer. You must NEVER write code, scripts, or implement solutions yourself — that is always the job of your worker agents.',
@@ -596,6 +721,9 @@ export async function processChatTurn(
     onHandoffToAgent,
     onAutoRunScript,
     isLive = false,
+    isCritic = false,
+    onCritiqueOutput,
+    onEpisodicMemory,
   } = options;
 
   const systemInstruction = buildSystemInstruction(
@@ -607,23 +735,122 @@ export async function processChatTurn(
     customSystemPrompt,
     handoffAgents,
     isLive,
+    isCritic,
   );
 
-  // ── Ollama path (straightforward chat, no tool calling) ───────────────────
+  // ── Ollama path (ReAct loop with optional tool execution) ─────────────────
   if (provider === 'ollama') {
+    // Determine which text-based tools are available for the ReAct loop
+    const ollamaTools: string[] = [];
+    if (dirHandle) {
+      ollamaTools.push('read_file', 'write_file', 'list_files');
+    }
+    if (enableWebSearch) ollamaTools.push('web_search');
+    if (!isManager && handoffAgents.length > 0 && onHandoffToAgent) {
+      ollamaTools.push('handoff_to_agent');
+    }
+
     const ollamaSystemPrompt = buildOllamaSystemInstruction(
       agentName,
       isManager,
       customSystemPrompt,
+      isCritic,
+      ollamaTools,
     );
-    const messages = chatHistory
+
+    const baseMessages = chatHistory
       .filter(m => m.role === 'user' || m.role === 'assistant')
       .map(m => ({ role: m.role, content: m.content }));
-    messages.push({ role: 'user', content: prompt });
 
-    onLog(`Using Ollama model: ${modelId}`);
-    const text = await ollamaChat(modelId, messages, ollamaSystemPrompt);
-    return { role: 'assistant', content: text };
+    // No tools: plain chat response
+    if (ollamaTools.length === 0) {
+      const messages = [...baseMessages, { role: 'user', content: prompt }];
+      onLog(`Using Ollama model: ${modelId}`);
+      const text = await ollamaChat(modelId, messages, ollamaSystemPrompt);
+      return { role: 'assistant', content: text };
+    }
+
+    // With tools: ReAct loop
+    onLog(`Using Ollama model: ${modelId} (ReAct mode)`);
+    const reActMessages = [...baseMessages, { role: 'user', content: prompt }];
+    const MAX_REACT_STEPS = 10;
+
+    for (let step = 0; step < MAX_REACT_STEPS; step++) {
+      const rawText = await ollamaChat(modelId, reActMessages, ollamaSystemPrompt);
+      const decision = parseOllamaReActDecision(rawText);
+
+      // No valid decision object — treat entire response as final answer
+      if (!decision) {
+        return { role: 'assistant', content: rawText };
+      }
+
+      if (decision.decision === 'FINISH') {
+        return { role: 'assistant', content: decision.response ?? rawText };
+      }
+
+      if (decision.decision === 'THINK') {
+        onLog(`[Ollama] Thinking: ${decision.thought ?? ''}`);
+        reActMessages.push({ role: 'assistant', content: rawText });
+        reActMessages.push({ role: 'user', content: 'Continue based on your reasoning above.' });
+        continue;
+      }
+
+      if (decision.decision === 'USE_TOOL') {
+        const toolName = decision.tool ?? '';
+        const toolInput = decision.input ?? {};
+        onLog(`[Ollama] Using tool: ${toolName}`);
+        reActMessages.push({ role: 'assistant', content: rawText });
+
+        let toolResult = '';
+        try {
+          if (toolName === 'read_file') {
+            if (!dirHandle) throw new Error('No workspace folder selected.');
+            const content = await readFile(dirHandle, toolInput.filename as string);
+            const preview = content.substring(0, 2000) + (content.length > 2000 ? '... (truncated)' : '');
+            toolResult = `File contents of "${toolInput.filename}":\n${preview}`;
+            onEpisodicMemory?.(`Read file: ${toolInput.filename}`);
+          } else if (toolName === 'write_file') {
+            if (!dirHandle) throw new Error('No workspace folder selected.');
+            await writeFile(dirHandle, toolInput.filename as string, toolInput.content as string);
+            toolResult = `Successfully wrote to "${toolInput.filename}".`;
+            onEpisodicMemory?.(`Wrote file: ${toolInput.filename}`);
+          } else if (toolName === 'list_files') {
+            if (!dirHandle) throw new Error('No workspace folder selected.');
+            const files = await listFiles(dirHandle);
+            toolResult = files.length > 0
+              ? `Workspace files:\n${files.map(f => `  • ${f}`).join('\n')}`
+              : 'Workspace is empty.';
+          } else if (toolName === 'web_search') {
+            const sr = await webSearch(toolInput.query as string);
+            const resultLines: string[] = [];
+            if (sr.abstract) resultLines.push(`Summary: ${sr.abstract}`);
+            for (const r of sr.results) {
+              resultLines.push(`- ${r.title}\n  ${r.snippet}\n  URL: ${r.url}`);
+            }
+            toolResult = resultLines.join('\n') || 'No results found.';
+          } else if (toolName === 'handoff_to_agent' && onHandoffToAgent) {
+            const reply = await onHandoffToAgent(
+              toolInput.agentId as string,
+              toolInput.message as string,
+            );
+            toolResult = `Agent ${toolInput.agentId} responded: ${reply}`;
+          } else {
+            toolResult = `Unknown tool: "${toolName}". Available: ${ollamaTools.join(', ')}.`;
+          }
+        } catch (e: any) {
+          toolResult = `Tool "${toolName}" failed: ${e.message}`;
+        }
+
+        reActMessages.push({ role: 'user', content: `Tool result for ${toolName}: ${toolResult}\n\nContinue with your task.` });
+      }
+    }
+
+    // Exceeded max steps — ask for a final answer
+    onLog('[Ollama] Max ReAct steps reached. Requesting final answer.');
+    reActMessages.push({ role: 'user', content: 'You have reached the maximum number of steps. Provide your final answer now using {"decision":"FINISH","response":"<answer>","thought":"..."}.' });
+    const finalText = await ollamaChat(modelId, reActMessages, ollamaSystemPrompt);
+    const finalDecision = parseOllamaReActDecision(finalText);
+    return { role: 'assistant', content: finalDecision?.response ?? finalText };
   }
 
   // ── Gemini path (with tool calling) ──────────────────────────────────────
@@ -631,11 +858,14 @@ export async function processChatTurn(
   const tools = [
     // Managers get a restricted base tool set (no code-writing tools).
     // Workers get the full base tool set.
-    ...(isManager ? managerBaseToolDeclarations : baseToolDeclarations),
+    // Critics get only read-only tools (read_file, list_files).
+    ...(isCritic
+      ? [readFileTool, listFilesTool]
+      : isManager ? managerBaseToolDeclarations : baseToolDeclarations),
     ...(enableWebSearch ? [webSearchTool] : []),
-    ...(isManager ? managerToolDeclarations : []),
-    ...(isManager && isRecursive ? [requestSignoffTool] : []),
-    ...(!isManager && handoffAgents.length > 0 && onHandoffToAgent ? [handoffAgentTool] : []),
+    ...(isManager && !isCritic ? managerToolDeclarations : []),
+    ...(isManager && isRecursive && !isCritic ? [requestSignoffTool] : []),
+    ...(!isManager && !isCritic && handoffAgents.length > 0 && onHandoffToAgent ? [handoffAgentTool] : []),
   ];
 
   const chat = ai.chats.create({
@@ -679,14 +909,29 @@ export async function processChatTurn(
         const content = await readFile(dirHandle, call.args.filename as string);
         const preview =
           content.substring(0, 2000) + (content.length > 2000 ? '... (truncated)' : '');
+        onEpisodicMemory?.(`Read file: ${call.args.filename}`);
         response = await chat.sendMessage({ message: `Tool read_file result: ${preview}` });
       } catch (e: any) {
         response = await chat.sendMessage({ message: `Tool read_file failed: ${e.message}` });
+      }
+    } else if (call.name === 'list_files') {
+      try {
+        if (!dirHandle) throw new Error('No workspace folder selected. Ask the user to open a folder first.');
+        const files = await listFiles(dirHandle);
+        const fileList = files.length > 0
+          ? files.map(f => `  • ${f}`).join('\n')
+          : '(empty workspace)';
+        response = await chat.sendMessage({
+          message: `Tool list_files result:\n${fileList}`,
+        });
+      } catch (e: any) {
+        response = await chat.sendMessage({ message: `Tool list_files failed: ${e.message}` });
       }
     } else if (call.name === 'write_file') {
       try {
         if (!dirHandle) throw new Error('No workspace folder selected. Ask the user to open a folder first.');
         await writeFile(dirHandle, call.args.filename as string, call.args.content as string);
+        onEpisodicMemory?.(`Wrote file: ${call.args.filename}`);
         response = await chat.sendMessage({ message: 'Tool write_file succeeded.' });
       } catch (e: any) {
         response = await chat.sendMessage({ message: `Tool write_file failed: ${e.message}` });
@@ -697,6 +942,7 @@ export async function processChatTurn(
         await writeFile(dirHandle, call.args.filename as string, call.args.content as string);
         const docType = (call.args.document_type as string) || 'document';
         onLog(`Document created: ${call.args.filename} (${docType})`);
+        onEpisodicMemory?.(`Created document: ${call.args.filename}`);
         response = await chat.sendMessage({
           message: `Tool create_document succeeded. ${docType} saved as "${call.args.filename}".`,
         });
@@ -710,6 +956,7 @@ export async function processChatTurn(
         const header = `# Tool: ${call.args.tool_name as string}\n# ${call.args.description as string}\n\n`;
         await writeFile(dirHandle, toolFilename, header + (call.args.script as string));
         onLog(`Tool built: ${toolFilename}`);
+        onEpisodicMemory?.(`Built tool: ${toolFilename}`);
         response = await chat.sendMessage({
           message:
             `Tool build_tool succeeded. Python tool saved as "${toolFilename}". ` +
@@ -897,6 +1144,23 @@ export async function processChatTurn(
           });
         } catch (e: any) {
           response = await chat.sendMessage({ message: `handoff_to_agent failed: ${e.message}` });
+        }
+      }
+    } else if (call.name === 'critique_output') {
+      if (!onCritiqueOutput) {
+        response = await chat.sendMessage({
+          message: 'critique_output is not available — no critic agent is configured.',
+        });
+      } else {
+        try {
+          onLog('Sending output to critic agent for review…');
+          const feedback = await onCritiqueOutput(call.args.output as string);
+          onEpisodicMemory?.('Critic reviewed output');
+          response = await chat.sendMessage({
+            message: `critique_output result:\n${feedback}`,
+          });
+        } catch (e: any) {
+          response = await chat.sendMessage({ message: `critique_output failed: ${e.message}` });
         }
       }
     } else {

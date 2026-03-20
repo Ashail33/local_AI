@@ -6,7 +6,7 @@ import type { ModelProvider } from '../lib/models';
 export interface GraphAgent {
   id: string;
   name: string;
-  role: 'manager' | 'worker' | 'authoriser';
+  role: 'manager' | 'worker' | 'authoriser' | 'critic';
   provider: ModelProvider;
   modelId: string;
   parentId: string | null;
@@ -456,6 +456,7 @@ export default function AgentGraph({
           const isPending = agent.id === pendingId;
           const isManager = agent.role === 'manager';
           const isAuthoriser = agent.role === 'authoriser';
+          const isCritic = agent.role === 'critic';
 
           const borderColor = isPending
             ? (connectMode === 'link' ? '#10b981' : '#818cf8')
@@ -465,18 +466,24 @@ export default function AgentGraph({
             ? '#818cf8'
             : isAuthoriser
             ? '#f59e0b'
+            : isCritic
+            ? '#22d3ee'
             : '#3f3f46';
           const bgColor = isActive || isPending ? '#111827' : '#18181b';
-          const badgeBg = isManager ? '#4f46e5' : isAuthoriser ? '#b45309' : '#0f766e';
+          const badgeBg = isManager ? '#4f46e5' : isAuthoriser ? '#b45309' : isCritic ? '#0e7490' : '#0f766e';
           const badgeLabel = isManager
             ? (agent.recursive ? 'RECUR' : 'MGR')
             : isAuthoriser
             ? 'AUTH'
+            : isCritic
+            ? 'CRITIC'
             : 'WORKER';
           const badgeW = isManager
             ? (agent.recursive ? 38 : 26)
             : isAuthoriser
             ? 30
+            : isCritic
+            ? 36
             : 42;
 
           return (
@@ -623,6 +630,10 @@ export default function AgentGraph({
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded bg-amber-700 shrink-0" />
           <span>Authoriser (AUTH)</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 rounded bg-cyan-700 shrink-0" />
+          <span>Critic (CRITIC)</span>
         </div>
         <p className="text-zinc-600 pt-1 border-t border-zinc-800">Drag nodes to rearrange</p>
         <p className="text-zinc-600">Click a link to view messages</p>
