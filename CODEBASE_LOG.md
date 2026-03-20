@@ -293,3 +293,24 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - **Design Decisions**: Implements a conditional inclusion of live-mode instructions based on the `isLive` parameter, preventing confusion for non-live managers and ensuring clarity in agent operations.
 
 - **Future Considerations**: Developers should be aware of the new `isLive` parameter in the `ProcessChatOptions` interface and its implications for system prompt behavior, as well as the importance of maintaining accurate message links for network visualization.
+
+---
+
+## 2026-03-20 11:20:06 UTC — `f82b106`
+> Implement agent architecture: episodic memory, Ollama ReAct, critic agent, list_files tool, max-agent limit
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **File Changes**: The primary changes are in `src/App.tsx`, where the agent architecture is enhanced to include a new 'critic' role and episodic memory functionality. The `src/components/AgentGraph.tsx` file is also modified, though details are truncated.
+
+- **New Features**:
+  - Introduced a 'critic' agent role that provides structured feedback on outputs via the `critique_output` tool.
+  - Added an `episodicMemory` property to agents, allowing them to log completed steps during task execution.
+
+- **Agent Management**: Implemented a maximum limit (`MAX_SPAWNED_AGENTS`) on the number of worker agents a manager can spawn to prevent chaos in agent management.
+
+- **Episodic Memory Functionality**: Created helper functions to append entries to an agent's episodic memory, which logs significant actions such as spawning workers and completing tasks.
+
+- **Design Patterns**: Utilized functional programming patterns with hooks (e.g., `useCallback`) to manage state updates for agents and their episodic memory, ensuring efficient re-renders.
+
+- **Future Considerations**: Developers should be aware of the new 'critic' role and its interaction with the manager role, particularly in how critiques are requested and logged. The episodic memory feature may require additional UI considerations for displaying logs effectively.
