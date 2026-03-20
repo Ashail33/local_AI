@@ -371,3 +371,23 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - All tests pass successfully, indicating that the new cases did not introduce any regressions.
 - The commit maintains the use of Jest (or a similar testing framework) and follows existing patterns for asynchronous testing and mocking functions.
 - Future developers should be aware of the importance of edge-case testing in ensuring robust functionality, especially in user-facing features like agent renaming and message creation.
+
+---
+
+## 2026-03-20 13:31:25 UTC — `674d7e9`
+> Fix terminal scrolling bug: isolate scroll contexts for chat and terminal panels
+
+- Replace shared messagesEndRef with separate container refs (messagesContainerRef, terminalContainerRef)
+- Use container-scoped scrollTop instead of scrollIntoView to prevent page-level scrolling
+- Split single scroll useEffect into independent effects for chat and terminal
+- Add overflow-hidden to right panel container to properly contain scroll
+- Add min-h-0 to terminal flex container for proper flex shrinking
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **File Modified**: `src/App.tsx` was updated to address a terminal scrolling bug by isolating scroll contexts for chat and terminal panels.
+- **Refactoring**: Replaced the shared `messagesEndRef` with separate references: `messagesContainerRef` for chat messages and `terminalContainerRef` for terminal logs, improving clarity and separation of concerns.
+- **Scrolling Logic**: Updated the scrolling mechanism to use `scrollTop` instead of `scrollIntoView`, preventing unintended page-level scrolling and ensuring each panel scrolls independently.
+- **Independent Effects**: Split the single `useEffect` for scrolling into two independent effects, one for chat messages and another for terminal logs, enhancing maintainability and readability.
+- **Styling Adjustments**: Added `overflow-hidden` to the right panel container and `min-h-0` to the terminal flex container to ensure proper containment and flex behavior during resizing.
+- **Future Considerations**: Developers should be aware of the new refs and effects when modifying the chat and terminal components, as changes to scrolling behavior may require updates to the respective useEffects.
