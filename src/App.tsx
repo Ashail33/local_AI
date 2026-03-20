@@ -174,7 +174,8 @@ export default function App() {
   >('idle');
   const [ollamaInstallProgress, setOllamaInstallProgress] = useState('');
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const terminalContainerRef = useRef<HTMLDivElement>(null);
   const tabInputRef = useRef<HTMLInputElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   /**
@@ -202,10 +203,21 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Scroll to bottom when active agent's messages/logs change
+  // Scroll chat messages to bottom when active agent's messages change
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeAgent?.messages, activeAgent?.terminalLogs]);
+    const container = messagesContainerRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [activeAgent?.messages]);
+
+  // Scroll terminal to bottom when active agent's terminal logs change
+  useEffect(() => {
+    const container = terminalContainerRef.current;
+    if (container) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [activeAgent?.terminalLogs]);
 
   // Auto-focus the rename input
   useEffect(() => {
@@ -1966,7 +1978,7 @@ export default function App() {
             )}
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-5">
+            <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-5 space-y-5">
               {activeAgent.messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div
@@ -1999,7 +2011,6 @@ export default function App() {
                   </div>
                 </div>
               )}
-              <div ref={messagesEndRef} />
             </div>
 
             {/* Input */}
@@ -2045,7 +2056,7 @@ export default function App() {
 
         {/* Right panel: script review + terminal (chat view only) */}
         {!showGraphView && (activeAgent.proposedScript || activeAgent.terminalLogs.length > 0 || activeAgent.episodicMemory.length > 0) && (
-          <div className="w-[22rem] bg-zinc-900 border-l border-zinc-800 flex flex-col shrink-0">
+          <div className="w-[22rem] bg-zinc-900 border-l border-zinc-800 flex flex-col shrink-0 overflow-hidden">
             {activeAgent.proposedScript && (
               <div className="flex-1 flex flex-col border-b border-zinc-800 min-h-0">
                 <div className="p-3 border-b border-zinc-800 flex items-center justify-between bg-zinc-950/50 shrink-0">
@@ -2092,13 +2103,13 @@ export default function App() {
               </div>
             )}
 
-            <div className={`flex flex-col ${!activeAgent.proposedScript ? 'flex-1' : 'h-40'}`}>
+            <div className={`flex flex-col min-h-0 ${!activeAgent.proposedScript ? 'flex-1' : 'h-40'}`}>
               <div className="p-2 border-b border-zinc-800 bg-zinc-950/50 shrink-0">
                 <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-wider px-1">
                   Terminal
                 </h2>
               </div>
-              <div className="flex-1 overflow-y-auto p-3 bg-[#0a0a0a] font-mono text-xs text-zinc-400 space-y-0.5">
+              <div ref={terminalContainerRef} className="flex-1 overflow-y-auto p-3 bg-[#0a0a0a] font-mono text-xs text-zinc-400 space-y-0.5">
                 {activeAgent.terminalLogs.length === 0 ? (
                   <div className="text-zinc-600 italic">No output yet…</div>
                 ) : (
@@ -2106,7 +2117,6 @@ export default function App() {
                     <div key={i} className="break-words">{log}</div>
                   ))
                 )}
-                <div ref={messagesEndRef} />
               </div>
             </div>
           </div>
