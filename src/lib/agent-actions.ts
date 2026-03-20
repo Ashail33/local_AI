@@ -194,3 +194,37 @@ export function listAgents(
     .filter(a => a.id !== managerId)
     .map(a => ({ id: a.id, name: a.name, role: a.role }));
 }
+
+// ── recordConversationExchange ────────────────────────────────────────────────
+
+/**
+ * Record a message exchange between two agents on the shared message-link
+ * graph.  If a link already exists between the pair it is updated in-place;
+ * otherwise a brand-new link is created.
+ *
+ * Returns a new array (immutable update) suitable for a React setState call.
+ */
+export function recordConversationExchange(
+  existingLinks: MessageLink[],
+  fromId: string,
+  toId: string,
+  senderName: string,
+  recipientName: string,
+  message: string,
+  reply: string,
+): MessageLink[] {
+  const newMsgs: MessageLinkEntry[] = [
+    { sender: senderName, content: message },
+    { sender: recipientName, content: reply },
+  ];
+
+  const existing = existingLinks.find(l => l.fromId === fromId && l.toId === toId);
+  if (existing) {
+    return existingLinks.map(l =>
+      l === existing
+        ? { ...l, messageCount: l.messageCount + 1, lastMessage: message, messages: [...l.messages, ...newMsgs] }
+        : l,
+    );
+  }
+  return [...existingLinks, { fromId, toId, messageCount: 1, lastMessage: message, messages: newMsgs }];
+}

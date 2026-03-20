@@ -16,6 +16,7 @@ import {
   createSpawnMessageLink,
   connectAgents,
   listAgents,
+  recordConversationExchange,
   type AgentLike,
   type ConnectedLink,
   type MessageLink,
@@ -400,5 +401,330 @@ describe('End-to-end: manager creates → renames → prompts an agent', () => {
       name: 'Research Bot',
       role: 'worker',
     });
+  });
+});
+
+// ── recordConversationExchange ───────────────────────────────────────────────
+
+describe('recordConversationExchange — single exchange', () => {
+  it('creates a new message link when none exists between the pair', () => {
+    const links = recordConversationExchange(
+      [], 'a1', 'a2', 'Alice', 'Bob', 'Hello Bob', 'Hi Alice',
+    );
+
+    expect(links).toHaveLength(1);
+    expect(links[0].fromId).toBe('a1');
+    expect(links[0].toId).toBe('a2');
+    expect(links[0].messageCount).toBe(1);
+    expect(links[0].lastMessage).toBe('Hello Bob');
+    expect(links[0].messages).toHaveLength(2);
+    expect(links[0].messages[0]).toEqual({ sender: 'Alice', content: 'Hello Bob' });
+    expect(links[0].messages[1]).toEqual({ sender: 'Bob', content: 'Hi Alice' });
+  });
+
+  it('appends to an existing link between the same pair', () => {
+    const existing: MessageLink[] = [{
+      fromId: 'a1', toId: 'a2', messageCount: 1, lastMessage: 'first',
+      messages: [
+        { sender: 'Alice', content: 'first' },
+        { sender: 'Bob', content: 'reply to first' },
+      ],
+    }];
+
+    const links = recordConversationExchange(
+      existing, 'a1', 'a2', 'Alice', 'Bob', 'second', 'reply to second',
+    );
+
+    expect(links).toHaveLength(1);
+    expect(links[0].messageCount).toBe(2);
+    expect(links[0].lastMessage).toBe('second');
+    expect(links[0].messages).toHaveLength(4);
+    expect(links[0].messages[2]).toEqual({ sender: 'Alice', content: 'second' });
+    expect(links[0].messages[3]).toEqual({ sender: 'Bob', content: 'reply to second' });
+  });
+
+  it('does not modify unrelated links', () => {
+    const unrelated: MessageLink = {
+      fromId: 'x', toId: 'y', messageCount: 5, lastMessage: 'old',
+      messages: [{ sender: 'X', content: 'old' }],
+    };
+
+    const links = recordConversationExchange(
+      [unrelated], 'a1', 'a2', 'Alice', 'Bob', 'hi', 'hey',
+    );
+
+    expect(links).toHaveLength(2);
+    // Unrelated link is unchanged
+    expect(links[0]).toEqual(unrelated);
+  });
+});
+
+describe('recordConversationExchange — multi-turn conversation', () => {
+  it('accumulates a full back-and-forth conversation across multiple turns', () => {
+    let links: MessageLink[] = [];
+
+    // Turn 1: Manager asks Worker to research a topic
+    links = recordConversationExchange(
+      links, 'mgr1', 'w1', 'Manager', 'Researcher',
+      'Please research quantum computing applications.',
+      'I found several key applications: cryptography, drug discovery, and optimisation.',
+    );
+
+    // Turn 2: Manager asks for more detail
+    links = recordConversationExchange(
+      links, 'mgr1', 'w1', 'Manager', 'Researcher',
+      'Can you elaborate on the cryptography aspect?',
+      'Quantum computing threatens RSA encryption but enables quantum key distribution.',
+    );
+
+    // Turn 3: Manager requests a summary
+    links = recordConversationExchange(
+      links, 'mgr1', 'w1', 'Manager', 'Researcher',
+      'Summarise your findings in three bullet points.',
+      '• Cryptography: QKD replaces RSA\n• Drug discovery: molecular simulation\n• Optimisation: logistics and finance',
+    );
+
+    // Should be a single link with all 3 exchanges
+    expect(links).toHaveLength(1);
+    expect(links[0].messageCount).toBe(3);
+    expect(links[0].messages).toHaveLength(6);
+
+    // Verify chronological ordering of all messages
+    expect(links[0].messages[0].sender).toBe('Manager');
+    expect(links[0].messages[1].sender).toBe('Researcher');
+    expect(links[0].messages[2].sender).toBe('Manager');
+    expect(links[0].messages[3].sender).toBe('Researcher');
+    expect(links[0].messages[4].sender).toBe('Manager');
+    expect(links[0].messages[5].sender).toBe('Researcher');
+
+    // Verify the last message is from the final turn
+    expect(links[0].lastMessage).toBe('Summarise your findings in three bullet points.');
+  });
+
+  it('keeps separate conversations for different agent pairs', () => {
+    let links: MessageLink[] = [];
+
+    // Manager talks to Worker 1
+    links = recordConversationExchange(
+      links, 'mgr', 'w1', 'Boss', 'Writer',
+      'Write an intro paragraph.', 'Here is the intro...',
+    );
+
+    // Manager talks to Worker 2
+    links = recordConversationExchange(
+      links, 'mgr', 'w2', 'Boss', 'Editor',
+      'Review the intro.', 'The intro looks good.',
+    );
+
+    // Manager sends another message to Worker 1
+    links = recordConversationExchange(
+      links, 'mgr', 'w1', 'Boss', 'Writer',
+      'Now write the conclusion.', 'Here is the conclusion...',
+    );
+
+    expect(links).toHaveLength(2);
+
+    const w1Link = links.find(l => l.toId === 'w1')!;
+    const w2Link = links.find(l => l.toId === 'w2')!;
+
+    expect(w1Link.messageCount).toBe(2);
+    expect(w1Link.messages).toHaveLength(4);
+    expect(w2Link.messageCount).toBe(1);
+    expect(w2Link.messages).toHaveLength(2);
+  });
+
+  it('correctly updates a spawn link (messageCount 0) on first exchange', () => {
+    // Spawn creates a link with messageCount 0
+    const spawnLink = createSpawnMessageLink('mgr1', 'w1', 'Manager', 'Research AI safety');
+
+    // First message_agent exchange should update the spawn link
+    const links = recordConversationExchange(
+      [spawnLink], 'mgr1', 'w1', 'Manager', 'Worker',
+      'What did you find?', 'AI safety involves alignment, robustness, and interpretability.',
+    );
+
+    // Should still be one link (updated, not duplicated)
+    expect(links).toHaveLength(1);
+    expect(links[0].messageCount).toBe(1);
+    // Spawn message is preserved, plus the new exchange
+    expect(links[0].messages).toHaveLength(3);
+    expect(links[0].messages[0]).toEqual({ sender: 'Manager', content: 'Research AI safety' });
+    expect(links[0].messages[1]).toEqual({ sender: 'Manager', content: 'What did you find?' });
+    expect(links[0].messages[2]).toEqual({ sender: 'Worker', content: 'AI safety involves alignment, robustness, and interpretability.' });
+  });
+});
+
+describe('recordConversationExchange — UI visibility', () => {
+  it('messages contain sender names and content needed by the AgentGraph panel', () => {
+    const links = recordConversationExchange(
+      [], 'a1', 'a2', 'Planner', 'Executor',
+      'Build the API endpoint.', 'Done — endpoint /api/tasks is live.',
+    );
+
+    const msgs = links[0].messages;
+    // Each message has the fields the AgentGraph conversation panel expects
+    for (const m of msgs) {
+      expect(m).toHaveProperty('sender');
+      expect(m).toHaveProperty('content');
+      expect(typeof m.sender).toBe('string');
+      expect(typeof m.content).toBe('string');
+      expect(m.sender.length).toBeGreaterThan(0);
+      expect(m.content.length).toBeGreaterThan(0);
+    }
+
+    // Senders alternate between the two agents (for chat-bubble alignment)
+    expect(msgs[0].sender).toBe('Planner');
+    expect(msgs[1].sender).toBe('Executor');
+  });
+
+  it('messageCount reflects the number of exchanges visible in the graph badge', () => {
+    let links: MessageLink[] = [];
+    for (let i = 1; i <= 5; i++) {
+      links = recordConversationExchange(
+        links, 'a1', 'a2', 'Agent A', 'Agent B',
+        `Message ${i}`, `Reply ${i}`,
+      );
+    }
+
+    expect(links[0].messageCount).toBe(5);
+    expect(links[0].messages).toHaveLength(10);
+  });
+});
+
+// ── End-to-end: two agents have a conversation about a task ──────────────────
+
+describe('End-to-end: two agents converse about a task', () => {
+  it('full conversation lifecycle — spawn, exchange, accumulate, display', () => {
+    // Simulate state
+    const state: {
+      agents: AgentLike[];
+      connectedLinks: ConnectedLink[];
+      messageLinks: MessageLink[];
+    } = {
+      agents: [
+        makeAgent({ id: 'mgr1', name: 'Manager', role: 'manager' }),
+      ],
+      connectedLinks: [],
+      messageLinks: [],
+    };
+
+    // Step 1: Manager spawns a worker for a task
+    const worker = makeAgent({
+      id: 'w1', name: 'Analyst', role: 'worker', parentId: 'mgr1',
+    });
+    state.agents.push(worker);
+    state.connectedLinks = computeSpawnLinks(state.connectedLinks, 'mgr1', 'w1');
+    state.messageLinks.push(
+      createSpawnMessageLink('mgr1', 'w1', 'Manager', 'Analyse customer feedback data'),
+    );
+
+    // Verify spawn set up the communication channel
+    expect(state.connectedLinks).toHaveLength(2);
+    expect(state.messageLinks).toHaveLength(1);
+    expect(state.messageLinks[0].messages[0].content).toBe('Analyse customer feedback data');
+
+    // Step 2: Manager sends first message to the worker
+    state.messageLinks = recordConversationExchange(
+      state.messageLinks, 'mgr1', 'w1', 'Manager', 'Analyst',
+      'What are the top complaints?',
+      'The top complaints are: slow delivery, poor packaging, and missing items.',
+    );
+
+    // Still one link (spawn link was updated)
+    expect(state.messageLinks).toHaveLength(1);
+    expect(state.messageLinks[0].messages).toHaveLength(3);
+
+    // Step 3: Manager asks a follow-up question
+    state.messageLinks = recordConversationExchange(
+      state.messageLinks, 'mgr1', 'w1', 'Manager', 'Analyst',
+      'What percentage of complaints are about delivery?',
+      '42% of all complaints mention slow delivery.',
+    );
+
+    expect(state.messageLinks[0].messageCount).toBe(2);
+    expect(state.messageLinks[0].messages).toHaveLength(5);
+
+    // Step 4: Manager asks for recommendations
+    state.messageLinks = recordConversationExchange(
+      state.messageLinks, 'mgr1', 'w1', 'Manager', 'Analyst',
+      'What do you recommend to address these issues?',
+      'I recommend: 1) Partner with faster couriers, 2) Improve packaging QA, 3) Implement order verification.',
+    );
+
+    expect(state.messageLinks[0].messageCount).toBe(3);
+    expect(state.messageLinks[0].messages).toHaveLength(7);
+
+    // Verify the full conversation is visible and correctly ordered
+    const conversation = state.messageLinks[0].messages;
+    expect(conversation[0]).toEqual({ sender: 'Manager', content: 'Analyse customer feedback data' });
+    expect(conversation[1]).toEqual({ sender: 'Manager', content: 'What are the top complaints?' });
+    expect(conversation[2]).toEqual({
+      sender: 'Analyst',
+      content: 'The top complaints are: slow delivery, poor packaging, and missing items.',
+    });
+    expect(conversation[3]).toEqual({ sender: 'Manager', content: 'What percentage of complaints are about delivery?' });
+    expect(conversation[4]).toEqual({ sender: 'Analyst', content: '42% of all complaints mention slow delivery.' });
+    expect(conversation[5]).toEqual({ sender: 'Manager', content: 'What do you recommend to address these issues?' });
+    expect(conversation[6]).toEqual({
+      sender: 'Analyst',
+      content: 'I recommend: 1) Partner with faster couriers, 2) Improve packaging QA, 3) Implement order verification.',
+    });
+
+    // Verify UI-facing metadata
+    expect(state.messageLinks[0].lastMessage).toBe('What do you recommend to address these issues?');
+    expect(state.messageLinks[0].fromId).toBe('mgr1');
+    expect(state.messageLinks[0].toId).toBe('w1');
+  });
+
+  it('worker-to-worker handoff conversation is recorded and visible', () => {
+    const state: {
+      agents: AgentLike[];
+      connectedLinks: ConnectedLink[];
+      messageLinks: MessageLink[];
+    } = {
+      agents: [
+        makeAgent({ id: 'mgr1', name: 'Manager', role: 'manager' }),
+        makeAgent({ id: 'w1', name: 'Writer', role: 'worker', parentId: 'mgr1' }),
+        makeAgent({ id: 'w2', name: 'Editor', role: 'worker', parentId: 'mgr1' }),
+      ],
+      connectedLinks: [],
+      messageLinks: [],
+    };
+
+    // Set up connections: mgr↔w1, mgr↔w2, w1→w2 (pipeline)
+    state.connectedLinks = computeSpawnLinks(state.connectedLinks, 'mgr1', 'w1');
+    state.connectedLinks = computeSpawnLinks(state.connectedLinks, 'mgr1', 'w2');
+    const connectResult = connectAgents(
+      state.agents, state.connectedLinks, state.messageLinks,
+      'Manager', 'w1', 'w2',
+    );
+    state.connectedLinks = connectResult.connectedLinks;
+    state.messageLinks = connectResult.messageLinks;
+
+    // Writer hands off work to Editor
+    state.messageLinks = recordConversationExchange(
+      state.messageLinks, 'w1', 'w2', 'Writer', 'Editor',
+      'Here is my draft article for your review.',
+      'I have reviewed the draft. Suggesting improvements to paragraphs 2 and 5.',
+    );
+
+    // Editor's conversation should be visible
+    const w1w2Link = state.messageLinks.find(l => l.fromId === 'w1' && l.toId === 'w2')!;
+    expect(w1w2Link).toBeDefined();
+    expect(w1w2Link.messageCount).toBe(1);
+    expect(w1w2Link.messages).toHaveLength(2);
+    expect(w1w2Link.messages[0].sender).toBe('Writer');
+    expect(w1w2Link.messages[1].sender).toBe('Editor');
+
+    // Second handoff round
+    state.messageLinks = recordConversationExchange(
+      state.messageLinks, 'w1', 'w2', 'Writer', 'Editor',
+      'Updated draft with your suggestions applied.',
+      'Looks great now. Approved for publication.',
+    );
+
+    const updatedLink = state.messageLinks.find(l => l.fromId === 'w1' && l.toId === 'w2')!;
+    expect(updatedLink.messageCount).toBe(2);
+    expect(updatedLink.messages).toHaveLength(4);
   });
 });

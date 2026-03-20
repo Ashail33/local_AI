@@ -16,6 +16,7 @@ import {
   createSpawnMessageLink,
   connectAgents as connectAgentsAction,
   listAgents as listAgentsAction,
+  recordConversationExchange,
 } from './lib/agent-actions';
 import {
   listOllamaModels, pullOllamaModel, testOllamaConnection,
@@ -673,23 +674,9 @@ export default function App() {
       }
 
       // Update or create message link
-      setMessageLinks(prev => {
-        const existing = prev.find(
-          l => l.fromId === managerId && l.toId === targetId && l.messageCount > 0,
-        );
-        const newMsgs = [
-          { sender: managerName, content: message },
-          { sender: target.name, content: reply },
-        ];
-        if (existing) {
-          return prev.map(l =>
-            l.fromId === managerId && l.toId === targetId
-              ? { ...l, messageCount: l.messageCount + 1, lastMessage: message, messages: [...l.messages, ...newMsgs] }
-              : l,
-          );
-        }
-        return [...prev, { fromId: managerId, toId: targetId, messageCount: 1, lastMessage: message, messages: newMsgs }];
-      });
+      setMessageLinks(prev =>
+        recordConversationExchange(prev, managerId, targetId, managerName, target.name, message, reply),
+      );
 
       return reply;
     };
@@ -867,21 +854,9 @@ export default function App() {
       }
 
       // Record message link for the graph
-      setMessageLinks(prev => {
-        const existing = prev.find(l => l.fromId === fromId && l.toId === targetId);
-        const newMsgs = [
-          { sender: fromName, content: message },
-          { sender: target.name, content: reply },
-        ];
-        if (existing) {
-          return prev.map(l =>
-            l.fromId === fromId && l.toId === targetId
-              ? { ...l, messageCount: l.messageCount + 1, lastMessage: message, messages: [...l.messages, ...newMsgs] }
-              : l,
-          );
-        }
-        return [...prev, { fromId, toId: targetId, messageCount: 1, lastMessage: message, messages: newMsgs }];
-      });
+      setMessageLinks(prev =>
+        recordConversationExchange(prev, fromId, targetId, fromName, target.name, message, reply),
+      );
 
       return reply;
     };
