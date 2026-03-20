@@ -3,7 +3,7 @@ import Markdown from 'react-markdown';
 import {
   FolderOpen, FileText, Send, Play, Terminal, CheckCircle2,
   AlertCircle, Plus, X, Edit2, Globe, ChevronDown, Download, Settings,
-  Network, Crown, Shield, RefreshCw, MessageSquare, Power,
+  Network, Crown, Shield, RefreshCw, MessageSquare, Power, Eye,
 } from 'lucide-react';
 import { pickDirectory, listFiles, writeBinaryFile, base64ToBytes, readFile as readFileFs, writeFile as writeFileFs, createFolder as createFolderFs } from './lib/fs';
 import { initPython, runPythonScript } from './lib/python';
@@ -50,7 +50,7 @@ interface Agent {
   id: string;
   name: string;
   /** Manager agents can spawn workers and delegate tasks to them. */
-  role: 'manager' | 'worker' | 'authoriser';
+  role: 'manager' | 'worker' | 'authoriser' | 'critic';
   /** ID of the manager that spawned this agent, or null for root agents. */
   parentId: string | null;
   modelId: string;
@@ -69,9 +69,22 @@ interface Agent {
   recursive: boolean;
   /** When true (manager only), the agent runs autonomously in a live loop. */
   isLive: boolean;
+  /**
+   * Ordered log of completed steps recorded during task execution (episodic memory).
+   * Populated automatically as the agent reads/writes files, spawns workers, etc.
+   */
+  episodicMemory: string[];
 }
 
 let agentCounter = 1;
+
+/** Maximum number of workers a single manager is allowed to spawn. */
+const MAX_SPAWNED_AGENTS = 10;
+
+/** Truncate a string to maxLength characters, appending '…' if truncated. */
+function truncateText(text: string, maxLength: number): string {
+  return text.length > maxLength ? `${text.substring(0, maxLength)}…` : text;
+}
 
 function createAgent(name?: string, role: Agent['role'] = 'worker', parentId: string | null = null): Agent {
   return {
@@ -88,6 +101,8 @@ function createAgent(name?: string, role: Agent['role'] = 'worker', parentId: st
         content:
           role === 'manager'
             ? 'Hello! I am your Manager Agent. I can create and coordinate worker agents, break down tasks, delegate work, and search the internet. Set me to **Live** mode to run autonomously, or send me a task to get started.'
+            : role === 'critic'
+            ? 'Hello! I am your Critic Agent. Submit work to me via the **critique_output** tool (from a manager) and I will provide structured feedback with strengths, issues, and recommendations.'
             : 'Hello! I am your Local AI Assistant. Please select a workspace folder to get started.',
       },
     ],
@@ -100,6 +115,7 @@ function createAgent(name?: string, role: Agent['role'] = 'worker', parentId: st
     systemPrompt: '',
     recursive: false,
     isLive: false,
+    episodicMemory: [],
   };
 }
 
@@ -237,6 +253,13 @@ export default function App() {
     setShowGraphView(false);
   };
 
+  const addCritic = () => {
+    const agent = createAgent(undefined, 'critic', null);
+    setAgents(prev => [...prev, agent]);
+    setActiveAgentId(agent.id);
+    setShowGraphView(false);
+  };
+
   const removeAgent = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setAgents(prev => {
@@ -358,6 +381,15 @@ export default function App() {
   const buildSpawnAgentCallback = (managerId: string) =>
     async (name: string, task: string): Promise<AgentRef> => {
       const managerAgent = agentsRef.current.find(a => a.id === managerId);
+
+      // Chaos prevention: limit the number of workers a manager can spawn
+      const existingWorkers = agentsRef.current.filter(a => a.parentId === managerId);
+      if (existingWorkers.length >= MAX_SPAWNED_AGENTS) {
+        throw new Error(
+          `Maximum agent limit (${MAX_SPAWNED_AGENTS}) reached. Cannot spawn more agents.`,
+        );
+      }
+
       const newWorker = createAgent(name, 'worker', managerId);
       // Inherit model, provider, and workspace from manager so the worker
       // has the same capabilities (tool calling, API keys, etc.).
@@ -388,6 +420,8 @@ export default function App() {
             : a,
         ),
       );
+      // Record spawn in manager's episodic memory
+      appendEpisodicMemory(managerId, `Spawned worker "${newWorker.name}" for task: ${truncateText(task, 80)}`);
       // Record spawn link
       setMessageLinks(prev => [
         ...prev,
@@ -446,6 +480,7 @@ export default function App() {
             onHandoffToAgent: workerHandoffTargets.length > 0
               ? buildHandoffAgentCallback(newWorker.id, newWorker.name)
               : undefined,
+            onEpisodicMemory: (entry) => appendEpisodicMemory(newWorker.id, entry),
           },
         );
 
@@ -466,6 +501,9 @@ export default function App() {
               : a,
           ),
         );
+
+        // Record the worker's completion in the manager's episodic memory
+        appendEpisodicMemory(managerId, `Worker "${newWorker.name}" completed task`);
 
         // Record the worker's response in the spawn link so the network view
         // shows the complete exchange.
@@ -559,10 +597,17 @@ export default function App() {
             onHandoffToAgent: workerHandoffTargets.length > 0
               ? buildHandoffAgentCallback(targetId, target.name)
               : undefined,
+            onEpisodicMemory: (entry) => appendEpisodicMemory(targetId, entry),
           },
         );
 
         reply = response.content;
+
+        // Record in manager's episodic memory
+        appendEpisodicMemory(
+          managerId,
+          `Messaged "${target.name}": ${truncateText(message, 60)}`,
+        );
 
         // Notify the manager's chat thread that a message was sent/received
         setAgents(prev =>
@@ -762,12 +807,16 @@ export default function App() {
               target.role === 'manager' && target.recursive
                 ? buildRequestSignoffCallback(targetId)
                 : undefined,
+            onCritiqueOutput:
+              target.role === 'manager' ? buildCritiqueCallback(targetId) : undefined,
             handoffAgents: targetHandoffAgents,
             onHandoffToAgent:
-              target.role !== 'manager' && targetHandoffAgents.length > 0
+              target.role !== 'manager' && target.role !== 'critic' && targetHandoffAgents.length > 0
                 ? buildHandoffAgentCallback(targetId, target.name)
                 : undefined,
             onAutoRunScript: buildAutoRunScriptCallback(targetId),
+            isCritic: target.role === 'critic',
+            onEpisodicMemory: (entry) => appendEpisodicMemory(targetId, entry),
           },
         );
 
@@ -905,6 +954,94 @@ export default function App() {
       return `Connected: ${fromAgent.name} → ${toAgent.name}. ${fromAgent.name} can now hand off work to ${toAgent.name} using handoff_to_agent.`;
     };
 
+  // ── Episodic memory helper ──────────────────────────────────────────────────
+
+  /** Append a step entry to an agent's episodic memory progress log. */
+  const appendEpisodicMemory = useCallback((agentId: string, entry: string) => {
+    setAgents(prev =>
+      prev.map(a =>
+        a.id === agentId
+          ? { ...a, episodicMemory: [...a.episodicMemory, entry] }
+          : a,
+      ),
+    );
+  }, []);
+
+  // ── Critique callback ───────────────────────────────────────────────────────
+
+  /**
+   * Called when a manager agent invokes the critique_output tool.
+   * Runs the critic agent (if one exists) with the provided output and
+   * returns structured feedback (strengths, issues, recommendations, verdict).
+   */
+  const buildCritiqueCallback = (managerId: string) =>
+    async (output: string): Promise<string> => {
+      const critic = agentsRef.current.find(a => a.role === 'critic');
+      if (!critic) {
+        return 'No critic agent configured. Add a Critic agent to enable output review.';
+      }
+
+      setAgents(prev => prev.map(a => a.id === critic.id ? { ...a, isLoading: true } : a));
+
+      const criticLog = (msg: string) =>
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === critic.id ? { ...a, terminalLogs: [...a.terminalLogs, msg] } : a,
+          ),
+        );
+
+      try {
+        const response = await processChatTurn(
+          `Please review the following work and provide structured feedback:\n\n${output}\n\n` +
+          'Format your response as:\nSTRENGTHS: <what is correct and well done>\n' +
+          'ISSUES: <what is missing, incorrect, or poorly done>\n' +
+          'RECOMMENDATIONS: <specific, actionable steps to improve>\n' +
+          'VERDICT: APPROVE | REVISE',
+          critic.messages.filter(m => m.role !== 'system'),
+          critic.dirHandle,
+          () => {},
+          criticLog,
+          {
+            modelId: critic.modelId,
+            provider: critic.provider,
+            agentName: critic.name,
+            customSystemPrompt: critic.systemPrompt,
+            isCritic: true,
+          },
+        );
+
+        setAgents(prev =>
+          prev.map(a =>
+            a.id === critic.id
+              ? {
+                  ...a,
+                  isLoading: false,
+                  messages: [
+                    ...a.messages,
+                    {
+                      role: 'user' as const,
+                      content: `[Review request from manager ${managerId}]: ${truncateText(output, 200)}`,
+                    },
+                    response as Message,
+                  ],
+                }
+              : a,
+          ),
+        );
+
+        // Record in manager's episodic memory
+        const verdictMatch = response.content.match(/VERDICT:\s*(APPROVE|REVISE)/i);
+        appendEpisodicMemory(managerId, `Critic reviewed output — verdict: ${
+          verdictMatch ? verdictMatch[1].toUpperCase() : 'received'
+        }`);
+
+        return response.content;
+      } catch (err: any) {
+        setAgents(prev => prev.map(a => a.id === critic.id ? { ...a, isLoading: false } : a));
+        return `Critic agent error: ${err.message}`;
+      }
+    };
+
   // ── Chat ────────────────────────────────────────────────────────────────────
 
   const handleSendMessage = async (agentId: string) => {
@@ -969,12 +1106,16 @@ export default function App() {
             agent.role === 'manager' && agent.recursive
               ? buildRequestSignoffCallback(agentId)
               : undefined,
+          onCritiqueOutput:
+            agent.role === 'manager' ? buildCritiqueCallback(agentId) : undefined,
           handoffAgents,
           onHandoffToAgent:
-            agent.role !== 'manager' && handoffAgents.length > 0
+            agent.role !== 'manager' && agent.role !== 'critic' && handoffAgents.length > 0
               ? buildHandoffAgentCallback(agentId, agent.name)
               : undefined,
           onAutoRunScript: buildAutoRunScriptCallback(agentId),
+          isCritic: agent.role === 'critic',
+          onEpisodicMemory: (entry) => appendEpisodicMemory(agentId, entry),
         },
       );
 
@@ -1054,7 +1195,9 @@ export default function App() {
           onListAgents: buildListAgentsCallback(agentId),
           onConnectAgents: buildConnectAgentsCallback(agentId),
           onRequestSignoff: agent.recursive ? buildRequestSignoffCallback(agentId) : undefined,
+          onCritiqueOutput: buildCritiqueCallback(agentId),
           onAutoRunScript: buildAutoRunScriptCallback(agentId),
+          onEpisodicMemory: (entry) => appendEpisodicMemory(agentId, entry),
         },
       );
 
@@ -1281,6 +1424,9 @@ export default function App() {
               {agent.role === 'authoriser' && (
                 <Shield className="w-3 h-3 text-amber-400 shrink-0" />
               )}
+              {agent.role === 'critic' && (
+                <Eye className="w-3 h-3 text-cyan-400 shrink-0" />
+              )}
               {agent.isLive && (
                 <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse shrink-0" />
               )}
@@ -1340,6 +1486,14 @@ export default function App() {
             <Shield className="w-3.5 h-3.5" />
             <span className="text-xs">Authoriser</span>
           </button>
+          <button
+            onClick={addCritic}
+            title="New Critic Agent — reviews outputs and gives structured feedback"
+            className="flex items-center gap-1 px-2 py-1.5 text-zinc-400 hover:text-cyan-400 hover:bg-zinc-800 rounded-md text-sm transition-colors shrink-0"
+          >
+            <Eye className="w-3.5 h-3.5" />
+            <span className="text-xs">Critic</span>
+          </button>
         </div>
 
         <span className="text-xs text-zinc-600 px-2 shrink-0 hidden sm:block">
@@ -1389,6 +1543,7 @@ export default function App() {
               <p>{agents.length} agent{agents.length !== 1 ? 's' : ''}</p>
               <p>{agents.filter(a => a.role === 'manager').length} manager{agents.filter(a => a.role === 'manager').length !== 1 ? 's' : ''}</p>
               <p>{agents.filter(a => a.role === 'authoriser').length} authoriser{agents.filter(a => a.role === 'authoriser').length !== 1 ? 's' : ''}</p>
+              <p>{agents.filter(a => a.role === 'critic').length} critic{agents.filter(a => a.role === 'critic').length !== 1 ? 's' : ''}</p>
               <p>{dedupedMessageLinks.filter(l => l.messageCount > 0).length} active link{dedupedMessageLinks.filter(l => l.messageCount > 0).length !== 1 ? 's' : ''}</p>
               <hr className="border-zinc-800 my-1" />
               <p className="font-semibold text-zinc-400 uppercase tracking-wider text-[10px]">
@@ -1411,6 +1566,12 @@ export default function App() {
                 className="w-full text-left flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-amber-300 transition-colors"
               >
                 <Shield className="w-3 h-3" /> Add Authoriser
+              </button>
+              <button
+                onClick={addCritic}
+                className="w-full text-left flex items-center gap-1.5 px-2 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-cyan-300 transition-colors"
+              >
+                <Eye className="w-3 h-3" /> Add Critic
               </button>
               {/* Remove Parent section: show agents that have a parent */}
               {agents.some(a => a.parentId !== null) && (
@@ -1524,6 +1685,9 @@ export default function App() {
                 {activeAgent.role === 'authoriser' && (
                   <Shield className="w-3 h-3 text-amber-400 shrink-0" />
                 )}
+                {activeAgent.role === 'critic' && (
+                  <Eye className="w-3 h-3 text-cyan-400 shrink-0" />
+                )}
                 {activeAgent.name}
               </span>
 
@@ -1545,7 +1709,7 @@ export default function App() {
                 ) : null;
               })()}
 
-              {/* Role cycle toggle: worker → manager → authoriser → worker */}
+              {/* Role cycle toggle: worker → manager → authoriser → critic → worker */}
               <button
                 onClick={() =>
                   updateAgent(activeAgent.id, {
@@ -1554,25 +1718,32 @@ export default function App() {
                         ? 'manager'
                         : activeAgent.role === 'manager'
                         ? 'authoriser'
+                        : activeAgent.role === 'authoriser'
+                        ? 'critic'
                         : 'worker',
                   })
                 }
-                title="Cycle role: Worker → Manager → Authoriser → Worker"
+                title="Cycle role: Worker → Manager → Authoriser → Critic → Worker"
                 className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors ${
                   activeAgent.role === 'manager'
                     ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/30'
                     : activeAgent.role === 'authoriser'
                     ? 'bg-amber-600/20 text-amber-400 border border-amber-500/30'
+                    : activeAgent.role === 'critic'
+                    ? 'bg-cyan-600/20 text-cyan-400 border border-cyan-500/30'
                     : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700'
                 }`}
               >
                 {activeAgent.role === 'manager' && <Crown className="w-3 h-3" />}
                 {activeAgent.role === 'authoriser' && <Shield className="w-3 h-3" />}
+                {activeAgent.role === 'critic' && <Eye className="w-3 h-3" />}
                 {activeAgent.role === 'worker' && <Edit2 className="w-3 h-3" />}
                 {activeAgent.role === 'manager'
                   ? 'Manager'
                   : activeAgent.role === 'authoriser'
                   ? 'Authoriser'
+                  : activeAgent.role === 'critic'
+                  ? 'Critic'
                   : 'Worker'}
               </button>
 
@@ -1827,6 +1998,8 @@ export default function App() {
                         : `${activeAgent.name} can spawn workers and delegate tasks…`
                       : activeAgent.role === 'authoriser'
                       ? `${activeAgent.name} reviews work and provides APPROVED/REJECTED decisions…`
+                      : activeAgent.role === 'critic'
+                      ? `${activeAgent.name} reviews outputs — use critique_output from a manager to submit work for review…`
                       : agents.length > 1
                       ? `Ask ${activeAgent.name} to write a document, build a tool, analyse data, or hand off to another agent…`
                       : `Ask ${activeAgent.name} to write a document, build a tool, run a script, or search the web…`
@@ -1848,7 +2021,7 @@ export default function App() {
         )}
 
         {/* Right panel: script review + terminal (chat view only) */}
-        {!showGraphView && (activeAgent.proposedScript || activeAgent.terminalLogs.length > 0) && (
+        {!showGraphView && (activeAgent.proposedScript || activeAgent.terminalLogs.length > 0 || activeAgent.episodicMemory.length > 0) && (
           <div className="w-[22rem] bg-zinc-900 border-l border-zinc-800 flex flex-col shrink-0">
             {activeAgent.proposedScript && (
               <div className="flex-1 flex flex-col border-b border-zinc-800 min-h-0">
@@ -1872,6 +2045,26 @@ export default function App() {
                   <pre className="text-xs font-mono text-zinc-300 whitespace-pre-wrap">
                     {activeAgent.proposedScript.code}
                   </pre>
+                </div>
+              </div>
+            )}
+
+            {/* Episodic memory: task progress log */}
+            {activeAgent.episodicMemory.length > 0 && (
+              <div className="flex flex-col border-b border-zinc-800 max-h-44 shrink-0">
+                <div className="p-2 border-b border-zinc-800 bg-zinc-950/50 shrink-0">
+                  <h2 className="text-xs font-bold text-zinc-500 uppercase tracking-wider px-1 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-500/70" />
+                    Task Progress
+                  </h2>
+                </div>
+                <div className="overflow-y-auto p-3 bg-[#0a0a0a] font-mono text-xs text-zinc-400 space-y-0.5">
+                  {activeAgent.episodicMemory.map((entry, i) => (
+                    <div key={i} className="flex items-start gap-1.5 break-words">
+                      <span className="text-emerald-500/70 shrink-0 mt-px">✓</span>
+                      <span>{entry}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
