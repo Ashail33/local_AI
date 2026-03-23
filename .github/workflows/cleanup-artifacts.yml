@@ -22,7 +22,7 @@ jobs:
             { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
           )) {
             for (const artifact of artifacts) {
-              console.log(`Deleting ${artifact.name} (${(artifact.size_in_bytes / 1048576).toFixed(1)} MB) from run ${artifact.workflow_run?.id}`);
+              console.log(`Deleting ${artifact.name} (${(artifact.size_in_bytes / 1048576).toFixed(1)} MB) from run ${artifact.workflow_run?.id ?? 'unknown'}`);
               await github.rest.actions.deleteArtifact({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
