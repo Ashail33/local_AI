@@ -1,0 +1,34 @@
+name: Delete All Artefacts
+
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+    - name: Delete all artefacts
+      uses: actions/github-script@v7
+      with:
+        script: |
+          let deleted = 0;
+          for await (const { data: { artifacts } } of github.paginate.iterator(
+            github.rest.actions.listArtifactsForRepo,
+            { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
+          )) {
+            for (const artifact of artifacts) {
+              console.log(`Deleting ${artifact.name} (${(artifact.size_in_bytes / 1048576).toFixed(1)} MB) from run ${artifact.workflow_run?.id ?? 'unknown'}`);
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id,
+              });
+              deleted++;
+            }
+          }
+          console.log(`Done – deleted ${deleted} artefact(s).`);

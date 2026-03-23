@@ -46,9 +46,11 @@ jobs:
         CSC_IDENTITY_AUTO_DISCOVERY: false
 
     - name: Upload macOS artifacts
+      if: startsWith(github.ref, 'refs/tags/v')
       uses: actions/upload-artifact@v5
       with:
         name: macos-build
+        retention-days: 1
         path: |
           dist-electron/*.dmg
           dist-electron/*.zip
@@ -83,9 +85,11 @@ jobs:
       run: npx electron-builder --win nsis --publish never
 
     - name: Upload Windows artifacts
+      if: startsWith(github.ref, 'refs/tags/v')
       uses: actions/upload-artifact@v5
       with:
         name: windows-build
+        retention-days: 1
         path: |
           dist-electron/*.exe
         if-no-files-found: warn
@@ -118,9 +122,11 @@ jobs:
       run: npx electron-builder --linux deb AppImage --publish never
 
     - name: Upload Linux artifacts
+      if: startsWith(github.ref, 'refs/tags/v')
       uses: actions/upload-artifact@v5
       with:
         name: linux-build
+        retention-days: 1
         path: |
           dist-electron/*.deb
           dist-electron/*.AppImage
