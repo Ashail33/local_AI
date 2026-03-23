@@ -474,3 +474,39 @@ Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
 - **Accessibility**: Added `aria-label` attributes to loading and live indicators for better accessibility support.
 - **State Management**: The `setShowGraphView` function is called immediately after a new agent is added, ensuring a seamless user experience.
 - **Future Considerations**: Developers should be aware of the new loading state and ensure that any future agent-related features account for both loading and live states to maintain UI consistency.
+
+---
+
+## 2026-03-23 09:51:52 UTC — `213991e`
+> Restrict artefact uploads to release builds and add bulk cleanup workflow (#30)
+
+* Initial plan
+
+* Restrict artefact uploads to release builds and add cleanup workflow
+
+- Only upload build artefacts when a version tag (v*) is pushed,
+  preventing ~621 MB of artefacts per non-release workflow run
+- Set retention-days: 1 on uploads so even release artefacts are
+  cleaned up quickly after the release job consumes them
+- Add cleanup-artifacts.yml (manual workflow_dispatch) to delete
+  all existing artefacts in one go
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+Agent-Logs-Url: https://github.com/Ashail33/local_AI/sessions/7f664747-e0bb-42b1-a263-6c64b62ea940
+
+* Improve cleanup workflow logging fallback
+
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+Agent-Logs-Url: https://github.com/Ashail33/local_AI/sessions/7f664747-e0bb-42b1-a263-6c64b62ea940
+
+---------
+
+Co-authored-by: copilot-swe-agent[bot] <198982749+Copilot@users.noreply.github.com>
+Co-authored-by: Ashail33 <34643237+Ashail33@users.noreply.github.com>
+
+- **Workflow Modifications**: The commit modifies the `.github/workflows/build.yml` file to restrict artifact uploads to only occur when a version tag (v*) is pushed, reducing unnecessary storage usage during non-release builds.
+- **Retention Policy**: It sets a retention policy of 1 day for uploaded artifacts, ensuring that even release artifacts are cleaned up quickly after being consumed by the release job.
+- **New Cleanup Workflow**: Introduces a new workflow file `.github/workflows/cleanup-artifacts.yml`, which allows manual triggering to delete all existing artifacts in one go, enhancing artifact management.
+- **Logging Improvements**: The cleanup workflow includes logging for each artifact deletion, providing visibility into the cleanup process and the size of artifacts being removed.
+- **Permissions Management**: The cleanup job specifies permissions for actions to write, ensuring it has the necessary access to delete artifacts.
+- **Future Considerations**: Developers should be aware of the artifact retention policy and the manual cleanup process, as it may affect how artifacts are managed and accessed in future builds.
