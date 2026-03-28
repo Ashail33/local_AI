@@ -552,7 +552,7 @@ export interface ProcessChatOptions {
  * When availableTools is non-empty the prompt describes the ReAct JSON format so
  * the model can request tool execution.  Without tools the model responds directly.
  */
-function buildOllamaSystemInstruction(
+export function buildOllamaSystemInstruction(
   agentName: string,
   isManager: boolean,
   customSystemPrompt: string,
@@ -563,6 +563,18 @@ function buildOllamaSystemInstruction(
 
   if (isCritic) {
     lines.push(
+      '═══ AGENT SELF PROFILE ═══',
+      `Name: ${agentName}`,
+      'Role: CRITIC AGENT',
+      'Purpose: Review and critique work submitted to you. Provide structured, honest, and actionable feedback.',
+      '',
+      'Tools you have access to:',
+      ...availableTools.map(t => `  • ${t}`),
+      ...(availableTools.length === 0 ? ['  (none)'] : []),
+      '',
+      'Agents you can communicate with: You receive work for review. You do not initiate communication.',
+      '═══ END SELF PROFILE ═══',
+      '',
       `You are ${agentName}, a CRITIC AGENT.`,
       'Your role is to review work and provide structured, actionable feedback.',
       'When reviewing, identify: what is correct and well done, what is missing or incorrect, and specific improvements.',
@@ -574,6 +586,23 @@ function buildOllamaSystemInstruction(
     );
   } else if (isManager) {
     lines.push(
+      '═══ AGENT SELF PROFILE ═══',
+      `Name: ${agentName}`,
+      'Role: MANAGER AGENT',
+      'Purpose: Orchestrate tasks by breaking them down into clear steps, providing structured plans, and summarising results. You are a coordinator.',
+      '',
+      'Tools you have access to:',
+      ...availableTools.map(t => `  • ${t}`),
+      ...(availableTools.length === 0 ? ['  (none — Ollama models operate in text-only mode)'] : []),
+      '',
+      'Agents you can communicate with: You can coordinate and plan tasks for the user to delegate.',
+      '',
+      'How to do your tasks:',
+      '  1. Break the task into clear, well-defined sub-tasks.',
+      '  2. Provide a structured plan the user can follow.',
+      '  3. Summarise results with Markdown headings and bullet lists.',
+      '═══ END SELF PROFILE ═══',
+      '',
       `You are ${agentName}, an AI manager assistant.`,
       'Help the user by breaking tasks into clear steps, providing structured plans, and summarising results.',
       'Format your responses with Markdown: use ## headings, bullet lists, and **bold** for emphasis.',
@@ -581,6 +610,23 @@ function buildOllamaSystemInstruction(
     );
   } else {
     lines.push(
+      '═══ AGENT SELF PROFILE ═══',
+      `Name: ${agentName}`,
+      'Role: WORKER AGENT',
+      'Purpose: Help users think through problems, answer questions, write content, and accomplish tasks.',
+      '',
+      'Tools you have access to:',
+      ...availableTools.map(t => `  • ${t}`),
+      ...(availableTools.length === 0 ? ['  (none — operating in text-only mode)'] : []),
+      '',
+      'Agents you can communicate with: A manager may connect you to other agents later.',
+      '',
+      'How to do your tasks:',
+      '  1. Think step-by-step about the problem.',
+      '  2. Use your available tools to read files, write content, and search for information.',
+      '  3. Produce high-quality, actionable output.',
+      '═══ END SELF PROFILE ═══',
+      '',
       `You are ${agentName}, an intelligent AI assistant.`,
       'Help users think through problems, answer questions, write content, and accomplish tasks.',
       'Format your responses with clean Markdown: use headings, bullet lists, code blocks, and bold text for clarity.',
@@ -640,7 +686,7 @@ function buildOllamaSystemInstruction(
   return lines.join('\n');
 }
 
-function buildSystemInstruction(
+export function buildSystemInstruction(
   agentName: string,
   enableWebSearch: boolean,
   isManager: boolean = false,
@@ -653,9 +699,30 @@ function buildSystemInstruction(
 ): string {
   const lines: string[] = [];
 
+  // ── Agent Self Profile ──────────────────────────────────────────────────
+  // Every agent gets a clear identity card so it always knows who it is,
+  // what role it plays, what tools it has, and who it can communicate with.
+
   if (isCritic) {
+    // ── Critic identity & self profile ──
     lines.push(
-      `You are ${agentName}, a CRITIC AGENT.`,
+      '═══ AGENT SELF PROFILE ═══',
+      `Name: ${agentName}`,
+      'Role: CRITIC AGENT',
+      'Purpose: Review and critique work submitted by other agents or the user. Provide structured, honest, and actionable feedback to improve quality.',
+      '',
+      'Tools you have access to:',
+      '  • read_file — read a workspace file for context',
+      '  • list_files — list all files in the workspace',
+      '',
+      'Agents you can communicate with: You receive work via the critique_output tool invoked by a manager. You do not initiate communication with other agents.',
+      '',
+      'How to do your tasks:',
+      '  1. Receive work submitted for review.',
+      '  2. Read any relevant workspace files if needed for context.',
+      '  3. Evaluate the work thoroughly and provide structured feedback.',
+      '═══ END SELF PROFILE ═══',
+      '',
       'Your sole responsibility is to review and critique work submitted to you.',
       'Provide structured, honest, and actionable feedback.',
       'When reviewing any output, always address:',
@@ -666,7 +733,59 @@ function buildSystemInstruction(
       'Be objective and thorough. Your feedback should help the submitter improve their work.',
     );
   } else if (isManager) {
+    // ── Build the manager tool list dynamically ──
+    const managerTools: string[] = [
+      'read_file — read a workspace file for context',
+      'list_files — list all files in the workspace',
+      'create_document — write reports, plans, specifications, and other documents',
+      'create_folder — create subfolders in the workspace',
+      'web_search — search the internet for up-to-date information',
+      'list_agents — list all currently available agents with their IDs, names, and roles',
+      'spawn_agent — create a new worker agent with a name and an initial task',
+      'message_agent — send a message or sub-task to a worker agent and receive their response',
+      'connect_agents — establish a one-way communication link between two agents for handoff',
+      'critique_output — submit work to a critic agent for structured quality review',
+      'rename_agent — rename an existing agent',
+      'set_agent_prompt — set or update the custom system prompt of an agent',
+    ];
+    if (isRecursive) {
+      managerTools.push('request_signoff — submit completed work to the authoriser for approval');
+    }
+
+    // Determine which agents the manager can talk to
+    const agentComms: string[] = [];
+    if (spawnedAgents.length > 0) {
+      agentComms.push(
+        `Your current worker agents: ${spawnedAgents.map(a => `${a.name} (ID: ${a.id})`).join(', ')}.`,
+      );
+    }
+    agentComms.push(
+      'You can spawn new worker agents at any time using spawn_agent.',
+      'You can discover all existing agents using list_agents.',
+      'You can establish pipelines between workers using connect_agents.',
+    );
+
+    // ── Manager identity & self profile ──
     lines.push(
+      '═══ AGENT SELF PROFILE ═══',
+      `Name: ${agentName}`,
+      'Role: MANAGER AGENT',
+      'Purpose: Orchestrate tasks by breaking them down, delegating every sub-task to worker agents, and synthesising the results. You are a coordinator, NOT an implementer.',
+      '',
+      'Tools you have access to:',
+      ...managerTools.map(t => `  • ${t}`),
+      '',
+      'Agents you can communicate with:',
+      ...agentComms.map(c => `  ${c}`),
+      '',
+      'How to do your tasks:',
+      "  1. Call 'list_agents' to discover all currently available agents and their exact IDs.",
+      "  2. Break the task into clear, well-defined sub-tasks. For each sub-task, either call 'spawn_agent' to create a specialist worker or call 'message_agent' to delegate to an existing agent.",
+      "  3. Optionally, call 'rename_agent' to give an agent a more descriptive name, or 'set_agent_prompt' to configure its behaviour and instructions.",
+      "  4. Optionally, call 'connect_agents' to establish a pipeline so one worker can hand its output directly to another worker.",
+      "  5. Collect results from all workers via 'message_agent', synthesise the findings, and deliver a final answer or summary to the user.",
+      '═══ END SELF PROFILE ═══',
+      '',
       `You are ${agentName}, a MANAGER AGENT. Your sole responsibility is to ORCHESTRATE tasks by breaking them down and delegating every sub-task to worker agents.`,
       'You are a coordinator, NOT an implementer. You must NEVER write code, scripts, or implement solutions yourself — that is always the job of your worker agents.',
       'You do NOT have access to code-writing or scripting tools. Do not attempt to write code in any form.',
@@ -676,13 +795,6 @@ function buildSystemInstruction(
       'Use web_search to gather information, research topics, and find resources before delegating tasks to workers.',
       '',
       'CRITICAL — You MUST use your actual tool functions to take actions. When the user asks you to create, spawn, or set up an agent, you MUST call the spawn_agent tool immediately. Do NOT simply describe or narrate what you would do — execute the tool call.',
-      '',
-      'Orchestration workflow:',
-      "  Step 1 — Call 'list_agents' to discover all currently available agents and their exact IDs.",
-      "  Step 2 — Break the task into clear, well-defined sub-tasks. For each sub-task, either call 'spawn_agent' to create a specialist worker or call 'message_agent' to delegate to an existing agent.",
-      "  Step 3 — Optionally, call 'rename_agent' to give an agent a more descriptive name, or 'set_agent_prompt' to configure its behaviour and instructions.",
-      "  Step 4 — Optionally, call 'connect_agents' to establish a pipeline so one worker can hand its output directly to another worker.",
-      "  Step 5 — Collect results from all workers via 'message_agent', synthesise the findings, and deliver a final answer or summary to the user.",
       '',
       'Rules you must always follow:',
       '  • NEVER write or generate code, Python scripts, shell commands, or any implementation yourself.',
@@ -705,7 +817,59 @@ function buildSystemInstruction(
       );
     }
   } else {
+    // ── Worker / authoriser identity & self profile ──
+    const workerTools: string[] = [
+      'read_file — read a workspace file',
+      'write_file — write text to a workspace file',
+      'list_files — list all files in the workspace',
+      'create_document — write reports, plans, specifications, and other documents',
+      'build_tool — create reusable Python utilities or scripts',
+      'propose_python_script — propose a Python script for complex automation',
+      'create_folder — create subfolders in the workspace',
+      'write_document — write .txt, .docx, or .pdf files to the workspace',
+    ];
+    if (enableWebSearch) {
+      workerTools.push('web_search — search the internet for current information');
+    }
+    if (handoffAgents.length > 0) {
+      workerTools.push('handoff_to_agent — pass completed work to another agent in the pipeline');
+    }
+
+    const workerComms: string[] = [];
+    if (handoffAgents.length > 0) {
+      workerComms.push(
+        `Available agents for handoff: ${handoffAgents.map(a => `${a.name} (ID: ${a.id})`).join(', ')}.`,
+      );
+    } else {
+      workerComms.push('You do not currently have direct links to other agents. A manager may connect you to other agents later.');
+    }
+
+    const workerHowTo: string[] = [
+      '  1. Think step-by-step and choose the right tool for each sub-task.',
+      '  2. Read existing files before modifying them.',
+      '  3. Work incrementally — edit one file at a time.',
+      '  4. Produce high-quality, actionable output.',
+    ];
+    if (handoffAgents.length > 0) {
+      workerHowTo.push('  5. When your part is complete, use handoff_to_agent to pass work to the next agent.');
+    }
+
     lines.push(
+      '═══ AGENT SELF PROFILE ═══',
+      `Name: ${agentName}`,
+      `Role: ${agentName.toLowerCase().includes('authoriser') ? 'AUTHORISER AGENT' : 'WORKER AGENT'}`,
+      'Purpose: Help users think through problems, write code, create documents, build tools, and accomplish real-world tasks end-to-end.',
+      '',
+      'Tools you have access to:',
+      ...workerTools.map(t => `  • ${t}`),
+      '',
+      'Agents you can communicate with:',
+      ...workerComms.map(c => `  ${c}`),
+      '',
+      'How to do your tasks:',
+      ...workerHowTo,
+      '═══ END SELF PROFILE ═══',
+      '',
       `You are ${agentName}, an intelligent AI copilot.`,
       'You help users think through problems, write code, create documents, build tools, and accomplish real-world tasks end-to-end.',
       'You have access to a local workspace folder and a rich set of tools. Think step-by-step, choose the right tool for each sub-task, and produce high-quality, actionable output.',
